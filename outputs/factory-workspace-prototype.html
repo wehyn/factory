@@ -1,0 +1,1101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#080c13">
+<title>Relay — Agent workspace prototype</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #080c13;
+  --panel: #0c121b;
+  --panel-raised: #101925;
+  --panel-hover: #151f2d;
+  --line: #202c3b;
+  --line-soft: #182331;
+  --text: #e8edf5;
+  --muted: #8492a6;
+  --subtle: #5f6e83;
+  --mint: #82e2bd;
+  --mint-dim: rgba(130,226,189,.12);
+  --blue: #88b7ff;
+  --blue-dim: rgba(136,183,255,.12);
+  --violet: #b7a2ff;
+  --violet-dim: rgba(183,162,255,.12);
+  --amber: #f0c477;
+  --amber-dim: rgba(240,196,119,.12);
+  --red: #ff8585;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+button, input { font: inherit; }
+button { color: inherit; }
+.app { height: 100%; min-height: 650px; display: flex; flex-direction: column; }
+.topbar {
+  flex: 0 0 58px;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--line);
+  background: #0b1018;
+  z-index: 5;
+}
+.brand { display:flex; align-items:center; gap:10px; min-width: 184px; }
+.brand-mark {
+  width: 28px; height: 28px; border-radius: 8px;
+  display:grid; place-items:center;
+  background: linear-gradient(145deg, rgba(130,226,189,.20), rgba(136,183,255,.10));
+  border: 1px solid rgba(130,226,189,.32); color: var(--mint);
+}
+.brand-name { font-size: 13px; font-weight: 720; letter-spacing: .16em; }
+.brand-sub { color: var(--subtle); font-size: 10px; letter-spacing: .12em; margin-top: 2px; }
+.top-sep { height: 25px; width: 1px; background: var(--line); }
+.project-title { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.project-kicker { color: var(--muted); font-size: 10px; letter-spacing: .11em; text-transform:uppercase; }
+.project-name { font-size: 13px; font-weight: 600; white-space:nowrap; }
+.top-spacer { flex:1; }
+.sim-label, .live-label, .status-pill, .tiny-badge {
+  display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+  border:1px solid var(--line); border-radius:999px; padding:5px 9px;
+  color:#aab6c7; font-size:10px; letter-spacing:.03em; background:rgba(255,255,255,.018);
+}
+.sim-label { color:#c2b3ff; border-color:rgba(183,162,255,.28); background:rgba(183,162,255,.07); }
+.dot { width:6px; height:6px; border-radius:50%; background:currentColor; box-shadow:0 0 9px currentColor; }
+.live-label { color:var(--mint); border-color:rgba(130,226,189,.2); }
+.top-action, .icon-button, .small-button, .send-button {
+  border:1px solid var(--line); background:#111a25; border-radius:7px;
+  color:#cbd4e1; cursor:pointer; transition: background .15s, border-color .15s, color .15s;
+}
+.top-action { padding:7px 11px; font-size:11px; }
+.top-action:hover, .icon-button:hover, .small-button:hover { background:#1a2735; border-color:#34465c; color:#fff; }
+.top-action.primary { border-color:rgba(130,226,189,.3); color:#b6eed7; background:rgba(130,226,189,.07); }
+.workspace-overlay { position:fixed; inset:58px 0 0; z-index:12; display:none; background:rgba(4,8,13,.78); backdrop-filter:blur(8px); overflow:auto; padding:32px; }
+.workspace-overlay.open { display:block; }
+.workspace-sheet { max-width:1120px; margin:auto; border:1px solid #2b3a4b; border-radius:16px; background:#0d1520; box-shadow:0 24px 90px #000a; overflow:hidden; }
+.workspace-sheet-head { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:24px 27px; border-bottom:1px solid var(--line); }
+.workspace-sheet-head h1 { margin:5px 0 5px; font-size:24px; letter-spacing:-.025em; }
+.workspace-sheet-head p { margin:0; color:var(--muted); line-height:1.5; }
+.workspace-kicker { color:var(--mint); font:10px var(--mono); letter-spacing:.13em; text-transform:uppercase; }
+.workspace-body { display:grid; grid-template-columns:1fr 300px; min-height:430px; }
+.repo-list { padding:22px 27px 27px; }
+.repo-group { margin-bottom:22px; }
+.repo-heading { display:flex; align-items:center; gap:9px; margin-bottom:10px; font-weight:650; }
+.repo-heading small { color:var(--subtle); font-weight:400; margin-left:auto; }
+.run-card { width:100%; text-align:left; display:grid; grid-template-columns:minmax(170px,1fr) 155px 140px; gap:14px; align-items:center; margin:7px 0; padding:13px 14px; border:1px solid var(--line); border-radius:9px; background:#111b27; cursor:pointer; }
+.run-card:hover { border-color:#51677e; background:#162333; }
+.run-card b { display:block; font-size:12px; }
+.run-card small { display:block; color:var(--muted); font-size:10px; margin-top:4px; }
+.run-card .mono { color:#aebbd0; font:10px var(--mono); }
+.run-state { justify-self:end; color:var(--mint); font-size:10px; }
+.run-state.review { color:var(--amber); }
+.run-state.waiting { color:var(--blue); }
+.worktree-pane { border-left:1px solid var(--line); background:#0b121b; padding:24px 18px; }
+.worktree-pane h2 { font-size:14px; margin:0 0 6px; }
+.worktree-pane p { color:var(--muted); font-size:11px; line-height:1.5; margin:0 0 17px; }
+.worktree-row { padding:10px 9px; border:1px solid var(--line); border-radius:8px; background:#111b27; margin-bottom:8px; }
+.worktree-row b { display:block; font:10px var(--mono); color:#e1e9f4; }
+.worktree-row span { display:block; color:var(--muted); font-size:10px; margin-top:5px; }
+.worktree-actions { display:flex; gap:7px; margin-top:9px; }
+.worktree-actions button, .worktree-create { border:1px solid #324458; border-radius:5px; background:#172333; color:#b9cbe0; padding:5px 7px; cursor:pointer; font-size:10px; }
+.worktree-actions button:hover, .worktree-create:hover { background:#213247; color:#fff; }
+.worktree-create { margin-bottom:13px; width:100%; padding:8px; border-color:rgba(130,226,189,.28); color:#b6eed7; }
+.worktree-footer { margin-top:18px; padding-top:14px; border-top:1px solid var(--line); color:var(--subtle); font-size:10px; line-height:1.5; }
+@media(max-width:850px) { .workspace-body { grid-template-columns:1fr; } .worktree-pane { border-left:0; border-top:1px solid var(--line); } .run-card { grid-template-columns:1fr 90px; } .run-card .mono { display:none; } }
+.layout {
+  min-height:0; flex:1;
+  display:grid; grid-template-columns: 264px minmax(520px,1fr) 310px;
+}
+.app.canvas-focus .layout { grid-template-columns:minmax(0,1fr); }
+.app.canvas-focus .chat-panel, .app.canvas-focus .inspector { display:none; }
+.app.canvas-focus .dock { flex-basis:155px; min-height:155px; }
+#replayCoordination, .dock { display:none !important; }
+.chat-panel, .inspector {
+  min-height:0; display:flex; flex-direction:column; background:var(--panel);
+}
+.chat-panel { border-right:1px solid var(--line); }
+.inspector { border-left:1px solid var(--line); }
+.panel-heading {
+  height:55px; flex:0 0 55px; padding:0 15px;
+  display:flex; align-items:center; justify-content:space-between;
+  border-bottom:1px solid var(--line-soft);
+}
+.heading-label { color:#a9b5c6; font-weight:630; font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
+.avatar {
+  width:28px;height:28px; border-radius:8px; display:grid;place-items:center;
+  color:#d5caff; background:linear-gradient(145deg,#483d72,#27243e);
+  border:1px solid rgba(183,162,255,.25); font-size:11px; font-weight:700;
+}
+.manager-identity { display:flex; align-items:center; gap:9px; }
+.manager-name { font-size:12px; font-weight:650; }
+.manager-role { color:var(--muted); font-size:10px; margin-top:2px; }
+.icon-button { width:27px; height:27px; display:grid; place-items:center; background:transparent; }
+.chat-context { margin:13px 13px 4px; padding:11px 11px 10px; border:1px solid var(--line); border-radius:9px; background:#0e1722; }
+.context-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.context-title { font-size:11px; font-weight:650; }
+.context-tag { color:var(--mint); font:9px var(--mono); }
+.context-copy { color:var(--muted); font-size:10px; line-height:1.55; margin-top:7px; }
+.context-meta { display:flex; align-items:center; gap:6px; margin-top:10px; color:#a0aec0; font-size:9px; }
+.mini-stack { display:flex; }
+.mini-stack span { width:16px;height:16px;margin-right:-4px; border-radius:50%; border:1.5px solid #0e1722; display:grid;place-items:center; color:#d8e0ec; background:#34465a; font-size:7px; }
+.mini-stack span:nth-child(2){background:#574982;color:#e1d9ff}
+.mini-stack span:nth-child(3){background:#285847;color:#beeedb}
+.chat-feed { flex:1; min-height:0; overflow:auto; padding:11px 13px 15px; display:flex; flex-direction:column; gap:13px; }
+.date-divider { display:flex; align-items:center; gap:8px; color:var(--subtle); font-size:9px; letter-spacing:.08em; text-transform:uppercase; }
+.date-divider:before, .date-divider:after { content:"";height:1px;flex:1;background:var(--line-soft); }
+.message { display:flex; flex-direction:column; align-items:flex-start; gap:5px; }
+.message.user { align-items:flex-end; }
+.message-meta { display:flex; align-items:center; gap:6px; color:var(--subtle); font-size:9px; }
+.message-meta strong { color:#9eacc0; font-weight:600; }
+.message-bubble {
+  max-width:95%; padding:9px 10px; border:1px solid #253245; border-radius:3px 9px 9px 9px;
+  background:#111b28; color:#d4deeb; line-height:1.55; font-size:11px;
+}
+.message.user .message-bubble { border-color:rgba(136,183,255,.22); background:rgba(136,183,255,.08); border-radius:9px 3px 9px 9px; }
+.message-system { margin:0 2px; padding:8px 9px; border-left:2px solid var(--violet); background:rgba(183,162,255,.055); color:#b6accf; font-size:10px; line-height:1.5; }
+.message-system b { color:#d6cbff; font-weight:600; }
+.chat-composer { padding:10px 12px 12px; border-top:1px solid var(--line); background:#0a1018; }
+.composer-box { border:1px solid #2b394a; border-radius:9px; background:#0d151f; padding:8px; }
+.composer-box:focus-within { border-color:rgba(136,183,255,.48); box-shadow:0 0 0 2px rgba(136,183,255,.06); }
+.composer-box input { width:100%; border:0; outline:0; background:transparent; color:var(--text); font-size:11px; padding:2px 1px 8px; }
+.composer-box input::placeholder { color:#66758a; }
+.composer-bottom { display:flex; align-items:center; justify-content:space-between; color:var(--subtle); font-size:9px; }
+.send-button { display:grid;place-items:center;width:26px;height:24px; border-color:rgba(136,183,255,.24); background:rgba(136,183,255,.14); color:#c5ddff; }
+.center { min-width:0; min-height:0; display:flex; flex-direction:column; background:#090e16; }
+.canvas-toolbar {
+  flex:0 0 51px; display:flex; align-items:center; gap:10px; padding:0 13px;
+  border-bottom:1px solid var(--line-soft); background:#0b111a;
+}
+.crumb { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:11px; min-width:0; }
+.crumb strong { color:#e0e7f0; font-weight:600; }
+.crumb-sep { color:#4c5a6d; }
+.toolbar-divider { height:20px; width:1px; background:var(--line); margin:0 2px; }
+.toolbar-spacer { flex:1; }
+.flow-stat { color:#98a7b9; font-size:10px; white-space:nowrap; }
+.flow-stat strong { color:var(--mint); font-weight:620; }
+.zoom-controls { display:flex; align-items:center; gap:4px; }
+.small-button { height:26px; min-width:27px; padding:0 7px; display:grid; place-items:center; font-size:10px; }
+.zoom-readout { width:38px; text-align:center; color:#9ba9bc; font:10px var(--mono); }
+.canvas-viewport {
+  flex:1; min-height:220px; position:relative; overflow:hidden; touch-action:none;
+  background-color:#090e16;
+  background-image:radial-gradient(rgba(123,146,173,.19) .75px, transparent .75px);
+  background-size:21px 21px;
+  cursor:grab;
+}
+.canvas-viewport.dragging { cursor:grabbing; }
+.canvas-world { position:absolute; left:0; top:0; width:1130px; height:625px; transform-origin:top left; }
+.edges { position:absolute; inset:0; overflow:visible; pointer-events:none; }
+.edge { fill:none; stroke:#53667d; stroke-width:1.65; vector-effect:non-scaling-stroke; opacity:.82; }
+.edge.active { stroke:var(--mint); opacity:.9; }
+.edge.handoff { stroke:var(--violet); stroke-dasharray:4 5; opacity:.78; }
+.edge-label { fill:#8797ac; font:10px var(--sans); letter-spacing:.01em; }
+.edge-label.violet { fill:#bcaef0; }
+.edge-label-bg { fill:#0d1520; stroke:#26364a; stroke-width:1; }
+.canvas-kicker {
+  position:absolute; left:17px; top:14px; z-index:1; pointer-events:none;
+  display:flex; align-items:center; gap:7px; color:#8291a5; font-size:9px; letter-spacing:.11em; text-transform:uppercase;
+}
+.canvas-kicker .diamond { width:6px;height:6px;border:1px solid #8e9cb0;transform:rotate(45deg); }
+.canvas-notice {
+  position:absolute; right:14px; top:12px; z-index:1;
+  display:flex; align-items:center; gap:6px; padding:5px 8px;
+  background:rgba(12,18,27,.9); border:1px solid #233144; border-radius:6px;
+  color:#91a0b4; font-size:9px; pointer-events:none;
+}
+.node {
+  position:absolute; width:230px; min-height:118px; padding:11px 11px 10px;
+  display:flex; flex-direction:column; text-align:left; gap:8px;
+  border:1px solid #2a394b; border-radius:10px; background:linear-gradient(145deg,#111a26,#0d141e);
+  box-shadow:0 8px 18px rgba(0,0,0,.18); cursor:pointer; outline:none;
+  transition:border-color .15s, box-shadow .15s, transform .15s, background .15s;
+}
+.node:hover { border-color:#52667e; background:#121d2a; transform:translateY(-1px); }
+.node:focus-visible { box-shadow:0 0 0 2px #88b7ff, 0 8px 22px #0007; }
+.node.selected { border-color:rgba(130,226,189,.78); box-shadow:0 0 0 1px rgba(130,226,189,.20), 0 12px 26px rgba(0,0,0,.25); }
+.node-head { display:flex; align-items:center; gap:8px; min-width:0; }
+.node-icon {
+  flex:0 0 23px; width:23px; height:23px; display:grid; place-items:center;
+  border:1px solid #334257; border-radius:6px; color:#9fb0c5; background:#172230;
+}
+.node-icon.api { color:var(--blue); border-color:rgba(136,183,255,.23); background:var(--blue-dim); }
+.node-icon.ui { color:var(--violet); border-color:rgba(183,162,255,.23); background:var(--violet-dim); }
+.node-icon.qa, .node-icon.check { color:var(--mint); border-color:rgba(130,226,189,.23); background:var(--mint-dim); }
+.node-icon.pr { color:var(--amber); border-color:rgba(240,196,119,.23); background:var(--amber-dim); }
+.node-icon.deploy { color:#a3c8ff; border-color:rgba(136,183,255,.22); background:var(--blue-dim); }
+.node-icon.watch { color:#86e5cb; border-color:rgba(130,226,189,.23); background:var(--mint-dim); }
+.node-title-block { min-width:0; flex:1; }
+.node-type { color:#7f8ea2; font-size:8px; letter-spacing:.1em; text-transform:uppercase; margin-bottom:3px; }
+.node-title { color:#e4ebf4; font-size:12px; line-height:1.25; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.node-status {
+  display:inline-flex; align-items:center; gap:5px; align-self:flex-start;
+  padding:4px 6px; border-radius:4px; font-size:8px; letter-spacing:.07em; text-transform:uppercase;
+  background:rgba(130,226,189,.10); color:var(--mint); border:1px solid rgba(130,226,189,.16);
+}
+.node-status .dot { width:5px;height:5px; }
+.node-status.review { color:var(--amber); border-color:rgba(240,196,119,.20); background:rgba(240,196,119,.09); }
+.node-status.waiting { color:#91a0b4; border-color:#2a394b; background:rgba(255,255,255,.025); }
+.node-copy { color:#9ba9bb; font-size:10px; line-height:1.45; min-height:26px; }
+.node-foot { display:flex; justify-content:space-between; align-items:center; gap:6px; padding-top:7px; border-top:1px solid rgba(132,153,179,.12); color:#718198; font-size:9px; }
+.node-foot .mono { font-family:var(--mono); color:#8999ad; }
+.node-manager { width:255px; min-height:132px; border-color:rgba(183,162,255,.35); }
+.node-request { width:220px; min-height:118px; }
+.node-api { left:20px; top:222px; width:220px; }
+.node-ui { left:285px; top:222px; width:230px; }
+.node-qa { left:565px; top:222px; width:230px; }
+.node-checks { left:70px; top:460px; width:230px; }
+.node-pr { left:340px; top:460px; width:230px; border-color:rgba(240,196,119,.32); }
+.node-deploy { left:610px; top:460px; width:230px; }
+.node-watch { left:880px; top:460px; width:230px; }
+.node-manager { left:310px; top:35px; }
+.node-request { left:30px; top:42px; }
+.node-qa { min-height:140px; }
+.node-pr { min-height:126px; }
+.node-deploy, .node-watch { min-height:112px; }
+.canvas-world > .edges, .canvas-world > .node { display:none; }
+.cli-edges { position:absolute; inset:0; overflow:visible; pointer-events:none; }
+.cli-link { fill:none; stroke:#536f84; stroke-width:2; }
+.cli-link.peer { stroke:#b7a2ff; stroke-dasharray:6 6; }
+.message-route { fill:none; stroke:#b7a2ff; stroke-width:3; stroke-dasharray:11 9; opacity:0; }
+.message-route.recent { opacity:.9; stroke-dasharray:none; }
+.message-route.active { opacity:1; animation:route-flow .6s linear infinite; }
+@keyframes route-flow { to { stroke-dashoffset:-20; } }
+.message-packet { fill:#d4c6ff; stroke:#665298; stroke-width:3; opacity:0; filter:drop-shadow(0 0 5px #b7a2ff); }
+.message-packet.active { opacity:1; }
+.agent-window.unspawned { opacity:0; transform:scale(.86); pointer-events:none; }
+.agent-window.spawning { animation:spawn-in .48s cubic-bezier(.18,.8,.22,1.1) both; }
+@keyframes spawn-in { from { opacity:0; transform:scale(.72) translateY(28px); } to { opacity:1; transform:scale(1) translateY(0); } }
+.coordination-event { position:absolute; z-index:3; left:50%; top:17px; transform:translateX(-50%); min-width:330px; text-align:center; padding:8px 12px; border:1px solid #65578a; border-radius:7px; background:#1a1830; color:#e0d5ff; font:11px var(--mono); box-shadow:0 12px 35px #0008; display:none; }
+.coordination-event.visible { display:block; }
+.agent-window { position:absolute; width:310px; height:250px; padding:0; overflow:hidden; display:flex; flex-direction:column; text-align:left; border:1px solid #3b5268; border-radius:11px; background:#0b121b; box-shadow:0 18px 38px #0008; cursor:pointer; }
+.agent-window:hover { border-color:#8bb8d7; }
+.agent-window.selected { border-color:var(--mint); box-shadow:0 0 0 2px rgba(130,226,189,.17),0 18px 38px #0008; }
+.agent-window.manager-cli { left:385px; top:65px; width:360px; height:190px; border-color:#8979bc; }
+.agent-window.api-cli { left:35px; top:335px; }
+.agent-window.ui-cli { left:410px; top:335px; }
+.agent-window.qa-cli { left:785px; top:335px; }
+.cli-window-head { display:flex; align-items:center; gap:8px; padding:10px 11px; border-bottom:1px solid #2a394a; background:#141f2d; }
+.cli-window-avatar { width:24px; height:24px; display:grid; place-items:center; border-radius:6px; background:#283a50; color:#d8e8fa; font-weight:700; font-size:11px; }
+.manager-cli .cli-window-avatar { background:#433765; color:#e2d8ff; }
+.ui-cli .cli-window-avatar { background:#4a3c68; color:#dfd4ff; }
+.qa-cli .cli-window-avatar { background:#295446; color:#c6f4df; }
+.cli-window-title { flex:1; min-width:0; }
+.cli-window-title b { display:block; font-size:12px; }
+.cli-window-title small { display:block; color:#91a4bc; font:10px var(--mono); margin-top:2px; }
+.cli-window-state { font:10px var(--mono); color:var(--mint); }
+.cli-window-state.manager { color:var(--violet); }
+.cli-terminal { flex:1; padding:12px; font:11px/1.55 var(--mono); white-space:pre-wrap; color:#afc0d1; overflow:hidden; }
+.cli-terminal .prompt { color:#8ce3b7; }
+.cli-terminal .success { color:#a0e6bd; }
+.cli-terminal .notice { color:#dec68e; }
+.cli-window-foot { display:flex; justify-content:space-between; gap:7px; padding:7px 11px; border-top:1px solid #263446; color:#8ca0b7; font:10px var(--mono); background:#0f1925; }
+.canvas-link-label { position:absolute; z-index:1; padding:5px 8px; border:1px solid #35445c; border-radius:5px; background:#111b27; color:#c1b6e7; font:10px var(--mono); }
+.canvas-footnote { position:absolute; left:16px; bottom:13px; color:#647389; font-size:9px; pointer-events:none; }
+.canvas-footnote kbd { font:9px var(--mono); color:#9cacbf; border:1px solid #2b3a4b; border-radius:3px; padding:2px 4px; background:#101925; }
+.dock {
+  flex:0 0 203px; min-height:170px; display:flex; flex-direction:column;
+  border-top:1px solid var(--line); background:#0b1119;
+}
+.dock-heading { height:40px; flex:0 0 40px; display:flex; align-items:center; gap:17px; padding:0 13px; border-bottom:1px solid var(--line-soft); }
+.dock-tab { height:40px; position:relative; display:inline-flex; align-items:center; gap:6px; padding:0 2px; color:#78879b; border:0; background:none; cursor:pointer; font-size:10px; }
+.dock-tab:hover { color:#dce5ef; }
+.dock-tab.active { color:#dce5ef; }
+.dock-tab.active:after { content:""; position:absolute; height:2px; bottom:-1px; left:0; right:0; background:var(--mint); border-radius:2px; }
+.dock-tab .count { color:#8293a8; font:9px var(--mono); }
+.dock-status { margin-left:auto; display:flex; align-items:center; gap:7px; color:#8ea0b5; font-size:9px; }
+.dock-status .dot { color:var(--mint); width:5px;height:5px; }
+.dock-body { flex:1; min-height:0; overflow:auto; padding:10px 13px; }
+.log-list { display:flex; flex-direction:column; gap:7px; font:10px/1.4 var(--mono); color:#b5c1d0; }
+.log-line { display:grid; grid-template-columns:50px 70px 1fr; gap:8px; align-items:start; }
+.log-time { color:#66778d; }
+.log-source { color:#8fcab5; }
+.log-source.ui { color:#b8a5ff; }
+.log-source.api { color:#8dbbff; }
+.log-source.system { color:#e4c27f; }
+.log-text { color:#afbdce; }
+.log-text .ok { color:var(--mint); }
+.log-text .accent { color:#d8caff; }
+.handoff-list, .gate-list { display:flex; flex-direction:column; gap:9px; }
+.handoff-row { display:grid; grid-template-columns:16px 1fr auto; align-items:start; gap:9px; color:#b9c4d2; font-size:10px; line-height:1.45; }
+.handoff-arrow { color:var(--violet); text-align:center; }
+.handoff-time { color:#65758a; font:9px var(--mono); }
+.gate-row { display:flex; align-items:center; gap:8px; color:#b4c0d0; font-size:10px; }
+.gate-check { width:15px;height:15px; flex:0 0 15px; display:grid;place-items:center; border-radius:4px; color:var(--mint); background:rgba(130,226,189,.10); }
+.gate-note { margin-left:auto; color:#8293a8; font:9px var(--mono); }
+.inspector .panel-heading { padding:0 14px; }
+.inspector-head-meta { display:flex; align-items:center; gap:7px; }
+.inspector-body { min-height:0; flex:1; overflow:auto; padding:13px 14px 18px; }
+.selected-intro { padding-bottom:13px; border-bottom:1px solid var(--line-soft); }
+.selected-kicker { display:flex; align-items:center; justify-content:space-between; color:#77869b; font-size:9px; letter-spacing:.1em; text-transform:uppercase; }
+.selected-title { margin:8px 0 6px; font-size:16px; line-height:1.25; letter-spacing:-.02em; font-weight:650; }
+.selected-subtitle { display:flex; align-items:center; gap:7px; color:#9aa9bc; font-size:10px; }
+.selected-subtitle .avatar-small { width:18px;height:18px;border-radius:5px;display:grid;place-items:center;background:#293a50;color:#c5d7ed;font-size:8px;font-weight:700; }
+.node-status.large { margin-top:10px; font-size:9px; }
+.inspector-tabs { display:grid; grid-template-columns:repeat(4,1fr); gap:3px; padding:3px; margin:13px 0 14px; border:1px solid var(--line); border-radius:7px; background:#090f17; }
+.inspector-tab { border:0; border-radius:4px; background:transparent; color:#77869a; padding:6px 2px; font-size:9px; cursor:pointer; }
+.inspector-tab:hover { color:#d4dfec; }
+.inspector-tab.active { color:#dce6f1; background:#192434; box-shadow:0 1px 3px #0005; }
+.info-section { margin:0 0 14px; }
+.section-label { margin-bottom:7px; color:#748399; font-size:9px; letter-spacing:.1em; text-transform:uppercase; }
+.info-copy { color:#b2bfce; font-size:10px; line-height:1.58; }
+.info-card { border:1px solid var(--line); border-radius:7px; background:#0f1722; padding:9px 10px; }
+.info-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 8px; }
+.info-cell .label { color:#75849a; font-size:9px; margin-bottom:4px; }
+.info-cell .value { color:#ced8e4; font-size:10px; }
+.info-cell .value.mono { font:9px var(--mono); color:#aebcd0; }
+.code-card { padding:9px; border:1px solid #223144; border-radius:7px; background:#080e15; color:#afc0d0; font:9px/1.6 var(--mono); overflow-wrap:anywhere; }
+.code-card .prompt { color:#71c89e; }
+.code-card .dim { color:#687b91; }
+.decision-card { border:1px solid rgba(240,196,119,.2); background:rgba(240,196,119,.055); border-radius:7px; padding:9px; }
+.decision-title { color:#e7c985; font-size:10px; font-weight:620; margin-bottom:5px; }
+.decision-copy { color:#b9ad91; font-size:9px; line-height:1.55; }
+.message-card { border:1px solid var(--line); border-radius:7px; background:#0e1620; padding:8px; margin-bottom:7px; }
+.message-card-head { display:flex; align-items:center; justify-content:space-between; color:#b7c3d2; font-size:9px; margin-bottom:5px; }
+.message-card-head strong { color:#c9baff; font-weight:620; }
+.message-card p { color:#9dabbe; font-size:9px; line-height:1.55; margin:0; }
+.inspector-cta { width:100%; margin-top:3px; padding:8px; background:rgba(130,226,189,.08); border:1px solid rgba(130,226,189,.22); color:#afe9d1; border-radius:6px; font-size:10px; cursor:pointer; }
+.inspector-cta:hover { background:rgba(130,226,189,.14); }
+.empty-note { color:#77879c; font-size:10px; line-height:1.6; padding:9px; border:1px dashed #2b3b4f; border-radius:7px; }
+.toast {
+  position:fixed; z-index:20; left:50%; bottom:18px; transform:translate(-50%,12px);
+  padding:9px 13px; border:1px solid #31445a; border-radius:7px;
+  background:#131e2b; color:#d5e0ec; font-size:11px; opacity:0; pointer-events:none;
+  transition:opacity .2s, transform .2s; box-shadow:0 10px 35px #0008;
+}
+.toast.show { opacity:1; transform:translate(-50%,0); }
+@media (max-width: 1180px) {
+  .layout { grid-template-columns:240px minmax(480px,1fr) 286px; }
+  .flow-stat { display:none; }
+  .topbar { gap:14px; }
+}
+@media (max-width: 980px) {
+  .layout { grid-template-columns:minmax(0,1fr) 290px; }
+  .chat-panel { display:none; }
+  .brand { min-width:auto; }
+  .project-title { display:none; }
+  .top-sep { display:none; }
+}
+@media (max-width: 700px) {
+  body { overflow:auto; }
+  .app { min-height:760px; height:auto; }
+  .topbar { position:sticky;top:0;flex-basis:54px; }
+  .layout { min-height:706px; grid-template-columns:minmax(0,1fr); }
+  .inspector { display:none; }
+  .center { min-height:706px; }
+  .canvas-toolbar { gap:6px; padding:0 9px; }
+  .crumb { font-size:10px; }
+  .dock { flex-basis:195px; }
+}
+</style>
+</head>
+<body>
+<div class="app canvas-focus" id="appShell">
+  <header class="topbar">
+    <div class="brand" aria-label="Relay workspace">
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M5 12h5m4 0h5M10 8l4 4-4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg>
+      </div>
+      <div><div class="brand-name">RELAY</div><div class="brand-sub">AGENT WORKSPACE</div></div>
+    </div>
+    <div class="top-sep"></div>
+    <button class="top-action primary" id="allRunsButton" type="button">All repositories · 3</button>
+    <div class="project-title"><div class="project-kicker">Atlas / Factory run · #184</div><div class="project-name">Teammate invitations</div></div>
+    <div class="top-spacer"></div>
+    <span class="sim-label"><span class="dot"></span> SIMULATED SESSION</span>
+    <button class="top-action" id="panelToggle" type="button">Show manager + details</button>
+    <button class="top-action" id="worktreesButton" type="button">Worktrees · 4</button>
+    <span class="live-label" id="runState"><span class="dot"></span> RUN ACTIVE</span>
+    <button class="top-action" id="pauseButton" type="button">Pause run</button>
+  </header>
+
+  <main class="layout">
+    <aside class="chat-panel" aria-label="Manager chat">
+      <div class="panel-heading">
+        <div class="manager-identity">
+          <div class="avatar">M</div>
+          <div><div class="manager-name">Mara</div><div class="manager-role">One manager across all repositories</div></div>
+        </div>
+        <button class="icon-button" id="chatInfo" aria-label="About manager chat" title="About manager chat">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor"/><path d="M8 7v4m0-6h.01" stroke="currentColor" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="chat-context">
+        <div class="context-top"><span class="context-title">Teammate invitations</span><span class="context-tag">RUN #184</span></div>
+        <div class="context-copy">Add a safe email invitation flow to the existing team settings page.</div>
+        <div class="context-meta">
+          <div class="mini-stack" aria-label="Three builder agents"><span>A</span><span>U</span><span>Q</span></div>
+          <span>3 Codex CLI builders</span><span style="margin-left:auto;color:var(--mint)">● 8/8 checks</span>
+        </div>
+      </div>
+      <div class="chat-feed" id="chatFeed" aria-live="polite">
+        <div class="date-divider">Today · 09:14</div>
+        <div class="message">
+          <div class="message-meta"><strong>Mara</strong><span>09:14</span></div>
+          <div class="message-bubble">I’ve split this into the invitation API and the settings UI. Two Codex builders worked in parallel; the test builder picked up both handoffs once the API shape was confirmed.</div>
+        </div>
+        <div class="message user">
+          <div class="message-meta"><span>09:17</span><strong>You</strong></div>
+          <div class="message-bubble">Keep invites single use, and don’t write memberships directly from the browser.</div>
+        </div>
+        <div class="message">
+          <div class="message-meta"><strong>Mara</strong><span>09:18</span></div>
+          <div class="message-bubble">Understood. The API owns invite creation and acceptance. I’ve recorded the single-use constraint as a review gate.</div>
+        </div>
+        <div class="message-system"><b>Builder handoff</b> · API → UI<br>Invite payload and expiry contract shared at 09:42.</div>
+        <div class="message">
+          <div class="message-meta"><strong>Mara</strong><span>10:02</span></div>
+          <div class="message-bubble">PR #248 is ready for your review. All 8 required checks passed. Invitation permissions require your approval before merge; production monitoring starts after deploy.</div>
+        </div>
+      </div>
+      <form class="chat-composer" id="chatForm">
+        <div class="composer-box">
+          <input id="chatInput" type="text" autocomplete="off" placeholder="Message Mara…" aria-label="Message Mara">
+          <div class="composer-bottom"><span>Only Mara receives this message</span><button class="send-button" type="submit" aria-label="Send message">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2 8h11m-4-4 4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button></div>
+        </div>
+      </form>
+    </aside>
+
+    <section class="center" aria-label="Workflow canvas and run output">
+      <div class="canvas-toolbar">
+        <div class="crumb"><span>ATLAS</span><span class="crumb-sep">/</span><strong>Teammate invitations</strong></div>
+        <div class="toolbar-divider"></div>
+        <div class="flow-stat">3 builders · <strong>8/8 checks passed</strong></div>
+        <div class="toolbar-spacer"></div>
+        <button class="top-action primary" id="replayCoordination" type="button">▶ Replay agent coordination</button>
+        <div class="zoom-controls" aria-label="Canvas zoom controls">
+          <button class="small-button" id="zoomOut" type="button" aria-label="Zoom out">−</button>
+          <span class="zoom-readout" id="zoomReadout">80%</span>
+          <button class="small-button" id="zoomIn" type="button" aria-label="Zoom in">+</button>
+          <button class="small-button" id="fitCanvas" type="button" aria-label="Fit canvas" title="Fit canvas">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 6V2h4m4 0h4v4m0 4v4h-4m-4 0H2v-4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="canvas-viewport" id="canvasViewport" aria-label="Pannable workflow graph">
+        <div class="canvas-kicker"><span class="diamond"></span> Codex CLI sessions <span style="color:#596a80">·</span> agent connections</div>
+        <div class="canvas-notice"><span class="dot" style="color:var(--mint)"></span> Live state · simulated</div>
+        <div class="coordination-event" id="coordinationEvent" role="status"></div>
+        <div class="canvas-world" id="canvasWorld">
+          <svg class="edges" viewBox="0 0 1130 625" role="img" aria-label="Connections show task dependencies and agent handoffs">
+            <defs>
+              <marker id="arrow" markerWidth="8" markerHeight="8" refX="6.4" refY="3.4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 7 3.4 0 6.8" fill="none" stroke="#71849c" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/></marker>
+              <marker id="arrowMint" markerWidth="8" markerHeight="8" refX="6.4" refY="3.4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 7 3.4 0 6.8" fill="none" stroke="#82e2bd" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/></marker>
+              <marker id="arrowViolet" markerWidth="8" markerHeight="8" refX="6.4" refY="3.4" orient="auto" markerUnits="strokeWidth"><path d="M0 0 7 3.4 0 6.8" fill="none" stroke="#b7a2ff" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/></marker>
+            </defs>
+            <path class="edge" d="M250 101 C273 101 282 101 310 101" marker-end="url(#arrow)"/>
+            <path class="edge" d="M398 167 C382 191 130 182 130 222" marker-end="url(#arrow)"/>
+            <path class="edge" d="M475 167 C487 188 400 188 400 222" marker-end="url(#arrow)"/>
+            <path class="edge" d="M240 284 C350 190 480 190 565 270" marker-end="url(#arrow)"/>
+            <path class="edge" d="M515 292 C535 292 542 292 565 292" marker-end="url(#arrow)"/>
+            <path class="edge handoff" d="M240 330 C247 394 278 394 285 330" marker-end="url(#arrowViolet)"/>
+            <path class="edge" d="M680 362 C680 408 185 410 185 460" marker-end="url(#arrow)"/>
+            <path class="edge active" d="M300 515 C315 515 323 515 340 515" marker-end="url(#arrowMint)"/>
+            <path class="edge active" d="M570 515 C585 515 593 515 610 515" marker-end="url(#arrowMint)"/>
+            <path class="edge" d="M840 515 C855 515 862 515 880 515" marker-end="url(#arrow)"/>
+            <g transform="translate(251 365)">
+              <rect class="edge-label-bg" x="-8" y="-12" width="113" height="20" rx="5"/>
+              <text class="edge-label violet" x="0" y="2">contract shared</text>
+            </g>
+            <g transform="translate(520 409)">
+              <rect class="edge-label-bg" x="-10" y="-12" width="97" height="20" rx="5"/>
+              <text class="edge-label" x="0" y="2">runs 8 checks</text>
+            </g>
+            <g transform="translate(296 492)">
+              <rect class="edge-label-bg" x="-9" y="-12" width="63" height="20" rx="5"/>
+              <text class="edge-label" x="0" y="2">all green</text>
+            </g>
+            <g transform="translate(835 492)">
+              <rect class="edge-label-bg" x="-9" y="-12" width="84" height="20" rx="5"/>
+              <text class="edge-label" x="0" y="2">after approval</text>
+            </g>
+          </svg>
+
+          <svg class="cli-edges" viewBox="0 0 1130 625" aria-label="Manager delegates to API, UI and verification agents; API and UI exchange a contract">
+            <defs><marker id="messageArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#d4c6ff" stroke-width="1.5"/></marker><marker id="spawnArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#7697b1" stroke-width="1.5"/></marker></defs>
+            <path class="cli-link" d="M535 255 C520 285 190 270 190 335" marker-end="url(#spawnArrow)"/>
+            <path class="cli-link" d="M565 255 L565 335" marker-end="url(#spawnArrow)"/>
+            <path class="cli-link" d="M620 255 C690 285 940 270 940 335" marker-end="url(#spawnArrow)"/>
+            <path class="message-route recent" id="routeApiUi" d="M345 470 C370 450 385 450 410 470" marker-end="url(#messageArrow)"/>
+            <path class="message-route" id="routeUiManager" d="M565 335 C565 305 565 280 565 255" marker-end="url(#messageArrow)"/>
+            <path class="message-route" id="routeManagerQa" d="M745 190 C855 190 940 235 940 335" marker-end="url(#messageArrow)"/>
+            <circle class="message-packet" id="messagePacket" r="8" cx="-30" cy="-30"/>
+          </svg>
+          <span class="canvas-link-label" style="left:415px;top:284px">delegates + tracks</span>
+          <span class="canvas-link-label" style="left:345px;top:495px">Ari → Uma · contract sent</span>
+
+          <button class="agent-window manager-cli" data-node="manager" aria-label="Select Mara manager Codex CLI">
+            <span class="cli-window-head"><span class="cli-window-avatar">M</span><span class="cli-window-title"><b>Mara · manager Codex CLI</b><small>integration/184 · owns the run</small></span><span class="cli-window-state manager">● coordinating</span></span>
+            <span class="cli-terminal" id="managerTerminal"><span class="prompt">$ codex exec "coordinate run #184"</span>
+Mission: teammate invitations
+✓ API and UI slices integrated
+✓ 8/8 required checks passed
+<span class="notice">→ PR #248 awaits your review</span></span>
+            <span class="cli-window-foot"><span>3 agents · 2 handoffs</span><span>you chat with Mara</span></span>
+          </button>
+
+          <button class="agent-window api-cli" data-node="api" aria-label="Select Ari API Codex CLI">
+            <span class="cli-window-head"><span class="cli-window-avatar">A</span><span class="cli-window-title"><b>Ari · API builder</b><small>agent/api-invites · Atlas</small></span><span class="cli-window-state">● complete</span></span>
+            <span class="cli-terminal"><span class="prompt">$ codex exec "build invitation API"</span>
+Added create + accept handlers
+Single-use token consumed in transaction
+<span class="success">✓ 14 API tests passed</span>
+→ Shared payload contract with Uma</span>
+            <span class="cli-window-foot"><span>Codex CLI session #A1</span><span>2m 41s</span></span>
+          </button>
+
+          <button class="agent-window ui-cli" data-node="ui" aria-label="Select Uma UI Codex CLI">
+            <span class="cli-window-head"><span class="cli-window-avatar">U</span><span class="cli-window-title"><b>Uma · UI builder</b><small>agent/ui-invites · Atlas</small></span><span class="cli-window-state">● complete</span></span>
+            <span class="cli-terminal"><span class="prompt">$ codex exec "build settings UI"</span>
+Added invite form + pending list
+Handled expired and consumed links
+<span class="success">✓ component checks passed</span>
+↔ Confirmed payload with Ari</span>
+            <span class="cli-window-foot"><span>Codex CLI session #U1</span><span>3m 08s</span></span>
+          </button>
+
+          <button class="agent-window qa-cli" data-node="qa" aria-label="Select Quinn verification Codex CLI">
+            <span class="cli-window-head"><span class="cli-window-avatar">Q</span><span class="cli-window-title"><b>Quinn · verification</b><small>agent/flow-tests · Atlas</small></span><span class="cli-window-state">● complete</span></span>
+            <span class="cli-terminal"><span class="prompt">$ codex exec "verify invite flow"</span>
+Joined API + UI handoffs
+Replay rejected; membership unchanged
+Expiry path verified in browser
+<span class="success">✓ 8/8 scenarios passed</span></span>
+            <span class="cli-window-foot"><span>Codex CLI session #Q1</span><span>1m 56s</span></span>
+          </button>
+
+          <button class="node node-request" data-node="request" aria-label="Select user request node">
+            <div class="node-head"><span class="node-icon"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M3 3.5h10v7H8l-3.5 2v-2H3v-7Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.5 6h5m-5 2h3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg></span><span class="node-title-block"><span class="node-type">Request · user</span><span class="node-title">Invite teammates by email</span></span></div>
+            <span class="node-status"><span class="dot"></span>Captured</span>
+            <div class="node-copy">Single use · browser never writes memberships</div>
+            <div class="node-foot"><span>Source of truth</span><span class="mono">09:14</span></div>
+          </button>
+
+          <button class="node node-manager" data-node="manager" aria-label="Select manager plan node">
+            <div class="node-head"><span class="avatar" style="width:23px;height:23px;border-radius:6px">M</span><span class="node-title-block"><span class="node-type">Manager · planning</span><span class="node-title">Mara routes the work</span></span></div>
+            <span class="node-status"><span class="dot"></span>Plan complete</span>
+            <div class="node-copy">2 build tasks in parallel · test task waits on both</div>
+            <div class="node-foot"><span>Owns your conversation</span><span class="mono">3 agents</span></div>
+          </button>
+
+          <button class="node node-api" data-node="api" aria-label="Select invitation API builder">
+            <div class="node-head"><span class="node-icon api"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M5.5 4 2.5 8l3 4m5-8 3 4-3 4M9 2.5l-2 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="node-title-block"><span class="node-type">Build task · Codex CLI</span><span class="node-title">Invitation API</span></span></div>
+            <span class="node-status"><span class="dot"></span>Complete</span>
+            <div class="node-copy">Single-use token · expiry and acceptance handled server-side</div>
+            <div class="node-foot"><span class="mono">agent/api-invites</span><span>2m 41s</span></div>
+          </button>
+
+          <button class="node node-ui" data-node="ui" aria-label="Select invitation UI builder">
+            <div class="node-head"><span class="node-icon ui"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2.2" y="2.7" width="11.6" height="10.6" rx="1.5" stroke="currentColor" stroke-width="1.15"/><path d="M2.5 5.4h11m-7.2 2.5h4.5m-4.5 2h3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg></span><span class="node-title-block"><span class="node-type">Build task · Codex CLI</span><span class="node-title">Settings invitation UI</span></span></div>
+            <span class="node-status"><span class="dot"></span>Complete</span>
+            <div class="node-copy">Invite form, pending list and clear expired-invite states</div>
+            <div class="node-foot"><span class="mono">agent/ui-invites</span><span>3m 08s</span></div>
+          </button>
+
+          <button class="node node-qa" data-node="qa" aria-label="Select end-to-end test builder">
+            <div class="node-head"><span class="node-icon qa"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="m3 8.2 3.1 3 6.9-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="6.3" stroke="currentColor" stroke-width="1"/></svg></span><span class="node-title-block"><span class="node-type">Verification · Codex CLI</span><span class="node-title">Invitation flow tests</span></span></div>
+            <span class="node-status"><span class="dot"></span>Complete</span>
+            <div class="node-copy">Picked up both handoffs · replay, expiry and acceptance paths</div>
+            <div class="node-foot"><span class="mono">agent/flow-tests</span><span>8/8 passed</span></div>
+          </button>
+
+          <button class="node node-checks" data-node="checks" aria-label="Select continuous integration checks">
+            <div class="node-head"><span class="node-icon check"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="m3 8 3 3 7-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="node-title-block"><span class="node-type">Quality gate · CI</span><span class="node-title">Required checks</span></span></div>
+            <span class="node-status"><span class="dot"></span>8 / 8 passed</span>
+            <div class="node-copy">Lint · typecheck · unit · e2e · security · build</div>
+            <div class="node-foot"><span>Every required check green</span><span class="mono">04:12</span></div>
+          </button>
+
+          <button class="node node-pr" data-node="pr" aria-label="Select pull request ready for review">
+            <div class="node-head"><span class="node-icon pr"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M5 3v8m0-5h5a2 2 0 0 1 2 2v1m0 0-2-2m2 2 2-2M5 3a1.4 1.4 0 1 0 0 .1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="5" cy="13" r="1.2" stroke="currentColor" stroke-width="1.1"/></svg></span><span class="node-title-block"><span class="node-type">Pull request · #248</span><span class="node-title">Ready for your review</span></span></div>
+            <span class="node-status review"><span class="dot"></span>Review needed</span>
+            <div class="node-copy">Permissions change · awaits your review · all checks green</div>
+            <div class="node-foot"><span class="mono">feat/team-invites</span><span>8/8 checks</span></div>
+          </button>
+
+          <button class="node node-deploy" data-node="deploy" aria-label="Select deployment waiting for merge">
+            <div class="node-head"><span class="node-icon deploy"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 2v8m0 0 3-3m-3 3L5 7m-2 6h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="node-title-block"><span class="node-type">Release · production</span><span class="node-title">Deploy after merge</span></span></div>
+            <span class="node-status waiting"><span class="dot"></span>Waiting on PR</span>
+            <div class="node-copy">Progressive rollout · health check before completion</div>
+            <div class="node-foot"><span>Rollback plan ready</span><span class="mono">queued</span></div>
+          </button>
+
+          <button class="node node-watch" data-node="watch" aria-label="Select production monitoring">
+            <div class="node-head"><span class="node-icon watch"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2 8s2.1-4 6-4 6 4 6 4-2.1 4-6 4-6-4-6-4Z" stroke="currentColor" stroke-width="1.1"/><circle cx="8" cy="8" r="1.6" stroke="currentColor" stroke-width="1.1"/><path d="M13 2v2m1-1h-2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></span><span class="node-title-block"><span class="node-type">Observe · production</span><span class="node-title">Monitor after deploy</span></span></div>
+            <span class="node-status waiting"><span class="dot"></span>Armed</span>
+            <div class="node-copy">Alert you on health regression · await your direction</div>
+            <div class="node-foot"><span>Owner: manager</span><span class="mono">post-deploy</span></div>
+          </button>
+        </div>
+        <div class="canvas-footnote">Blue arrows: spawned by manager &nbsp;·&nbsp; Purple arrows: actual agent messages in the live app &nbsp;·&nbsp; <kbd>Drag</kbd> pan &nbsp;·&nbsp; <kbd>Scroll</kbd> zoom</div>
+      </div>
+
+      <section class="dock" aria-label="Agent activity">
+        <div class="dock-heading">
+          <button class="dock-tab active" data-dock="terminal">CLI stream <span class="count">· 18</span></button>
+          <button class="dock-tab" data-dock="handoffs">Agent handoffs <span class="count">· 3</span></button>
+          <button class="dock-tab" data-dock="gates">Merge policy</button>
+          <div class="dock-status"><span class="dot"></span><span id="dockStatusText">STREAMING SIMULATED OUTPUT</span></div>
+        </div>
+        <div class="dock-body" id="dockBody" aria-live="polite"></div>
+      </section>
+    </section>
+
+    <aside class="inspector" aria-label="Selected task inspector">
+      <div class="panel-heading">
+        <span class="heading-label">Inspector</span>
+        <div class="inspector-head-meta"><span class="tiny-badge" id="inspectorType">TASK</span><button class="icon-button" id="copyNode" aria-label="Copy node reference" title="Copy reference">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="8" height="8" rx="1.4" stroke="currentColor" stroke-width="1.1"/><path d="M10.5 5V3.7A1.2 1.2 0 0 0 9.3 2.5H3.7a1.2 1.2 0 0 0-1.2 1.2v5.6a1.2 1.2 0 0 0 1.2 1.2H5" stroke="currentColor" stroke-width="1.1"/></svg>
+        </button></div>
+      </div>
+      <div class="inspector-body" id="inspectorBody"></div>
+    </aside>
+  </main>
+</div>
+<section class="workspace-overlay" id="workspaceOverlay" aria-label="Factory home" aria-hidden="true">
+  <div class="workspace-sheet">
+    <div class="workspace-sheet-head">
+      <div><div class="workspace-kicker">Factory home · simulated</div><h1>Repositories & runs</h1><p>One persistent conversation with Mara. Linked tasks connect work across repositories without sharing a worktree.</p></div>
+      <button class="top-action" id="closeWorkspace" type="button">Close ×</button>
+    </div>
+    <div class="workspace-body">
+      <div class="repo-list">
+        <div class="repo-group"><div class="repo-heading">◈ Atlas <small>2 active runs · 5 worktrees</small></div>
+          <button class="run-card" data-open-run="184"><span><b>#184 Teammate invitations</b><small>PR #248 ready · manager Mara · linked to Identity #72</small></span><span class="mono">integration/184</span><span class="run-state review">Needs review →</span></button>
+          <button class="run-card" data-demo-run="185"><span><b>#185 Settings accessibility</b><small>2 Codex builders · independent task</small></span><span class="mono">integration/185</span><span class="run-state">Building →</span></button>
+        </div>
+        <div class="repo-group"><div class="repo-heading">◈ Identity <small>1 linked run · 2 worktrees</small></div>
+          <button class="run-card" data-demo-run="72"><span><b>#72 Invitation email delivery</b><small>Linked to Atlas #184 · separate PR and checks</small></span><span class="mono">integration/72</span><span class="run-state waiting">Checks running →</span></button>
+        </div>
+        <div class="repo-group"><div class="repo-heading">◈ Portfolio <small>1 active run · 2 worktrees</small></div>
+          <button class="run-card" data-demo-run="31"><span><b>#31 Fix mobile navigation</b><small>Low-risk candidate · monitoring after merge</small></span><span class="mono">integration/31</span><span class="run-state">In review →</span></button>
+        </div>
+      </div>
+      <aside class="worktree-pane" aria-label="Current run worktrees">
+        <h2>Atlas #184 worktrees</h2><p>Separate checkouts keep each builder’s edits isolated. Mara integrates into the run branch.</p>
+        <button class="worktree-create" data-worktree-action="create">+ Create task worktree</button>
+        <div class="worktree-row"><b>integration/184</b><span>Manager · integration branch · PR #248</span><div class="worktree-actions"><button data-worktree-action="inspect" data-worktree="integration/184">Inspect</button></div></div>
+        <div class="worktree-row"><b>agent/api-invites</b><span>Ari · API slice · ready to archive</span><div class="worktree-actions"><button data-worktree-action="inspect" data-worktree="agent/api-invites">Inspect</button><button data-worktree-action="archive" data-worktree="agent/api-invites">Archive</button></div></div>
+        <div class="worktree-row"><b>agent/ui-invites</b><span>Uma · UI slice · ready to archive</span><div class="worktree-actions"><button data-worktree-action="inspect" data-worktree="agent/ui-invites">Inspect</button><button data-worktree-action="archive" data-worktree="agent/ui-invites">Archive</button></div></div>
+        <div class="worktree-row"><b>agent/flow-tests</b><span>Quinn · verification slice · ready to archive</span><div class="worktree-actions"><button data-worktree-action="inspect" data-worktree="agent/flow-tests">Inspect</button><button data-worktree-action="archive" data-worktree="agent/flow-tests">Archive</button></div></div>
+        <div class="worktree-footer">Worktrees are created per run and builder. The manager checks for uncommitted work before cleanup; linked runs in other repositories remain separate.</div>
+      </aside>
+    </div>
+  </div>
+</section>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(function () {
+  "use strict";
+  var workflow = {
+    request: {
+      type: "USER REQUEST", title: "Invite teammates by email", owner: "You", initials: "Y",
+      status: "Captured", tone: "done", duration: "09:14", dependencies: "—",
+      summary: "A request to add teammate invitations through the existing team settings page.",
+      decision: "Single-use links, expiry enforced on the server, and no direct membership writes from the browser.",
+      messages: [{from:"Mara",time:"09:14",text:"I’ve recorded your single-use and server-side acceptance constraints in the run brief."}],
+      logs: [["09:14:02","user","Request received: add teammate invitation by email."],["09:14:06","manager","Constraints noted: single-use token; server-owned membership writes."]]
+    },
+    manager: {
+      type: "MANAGER PLAN", title: "Mara routes the work", owner: "Mara · manager agent", initials: "M",
+      status: "Plan complete", tone: "done", duration: "00:18", dependencies: "User request",
+      summary: "Split the work into API and settings UI tasks. The end-to-end test task waits for both builders to finish and share their branches.",
+      decision: "Parallelize API and UI. Keep invitation acceptance and membership mutation on the server. Permissions changes require user review; all checks must pass before merge.",
+      messages: [{from:"Mara → API + UI",time:"09:15",text:"Build the invitation contract and settings experience in parallel. Please message each other directly when the payload shape is settled."},{from:"Mara → QA",time:"09:15",text:"Wait for both build tasks, then cover acceptance, expiry, and replay."}],
+      logs: [["09:14:18","manager","Plan created: API + UI in parallel; tests depend on both."],["09:14:26","manager","Assigned three isolated Codex CLI workspaces."],["09:14:31","manager","Recorded conservative merge and production-watch gates."]]
+    },
+    api: {
+      type: "CODEX CLI · BACKEND", title: "Invitation API", owner: "Ari · Codex CLI", initials: "A",
+      status: "Complete", tone: "done", duration: "2m 41s", dependencies: "Manager plan",
+      summary: "Added server-owned invite creation and acceptance. Tokens are single-use, expire on schedule, and cannot create duplicate memberships.",
+      decision: "Use a hashed, single-use token with server-side expiry validation. Acceptance consumes the token in the same transaction as membership creation.",
+      messages: [{from:"Ari → Uma",time:"09:42",text:"Contract is ready: POST /invites returns inviteId, email, expiresAt. Accept endpoint consumes the token atomically; replay returns 410."}],
+      logs: [["09:38:02","api","$ codex exec --full-auto 'implement invite API'"],["09:39:11","api","Added create and accept handlers with hashed single-use token."],["09:40:26","api","Acceptance and membership write share one transaction."],["09:42:01","api","Contract shared with UI builder; replay returns 410."],["09:42:33","api","$ pnpm test --filter invitation-api"],["09:43:04","api","<span class='ok'>PASS</span> 14 API tests"]]
+    },
+    ui: {
+      type: "CODEX CLI · FRONTEND", title: "Settings invitation UI", owner: "Uma · Codex CLI", initials: "U",
+      status: "Complete", tone: "done", duration: "3m 08s", dependencies: "Manager plan · API contract",
+      summary: "Built the invite form and pending-invitation list, including clear expired states and accessible feedback.",
+      decision: "Show pending and expired invitations separately. Reuse the existing settings form controls and let the API own all acceptance decisions.",
+      messages: [{from:"Uma → Ari",time:"09:39",text:"I can consume inviteId, email, expiresAt. Please confirm acceptance response for already-used links."},{from:"Ari → Uma",time:"09:42",text:"Confirmed: success returns membership; consumed or expired token returns 410. Contract now stable."},{from:"Uma → Mara",time:"09:51",text:"UI branch is ready. Loading, empty, expired and API error states are covered."}],
+      logs: [["09:36:40","ui","$ codex exec --full-auto 'build team invite settings UI'"],["09:38:22","ui","Added invite form and pending list states."],["09:39:08","ui","Asked API builder to confirm consumed-token response."],["09:42:19","ui","Contract received; wired success and 410 states."],["09:45:42","ui","Added keyboard and screen-reader status feedback."],["09:49:48","ui","$ pnpm test --filter team-settings"],["09:50:21","ui","<span class='ok'>PASS</span> 22 component tests"]]
+    },
+    qa: {
+      type: "CODEX CLI · VERIFICATION", title: "Invitation flow tests", owner: "Quinn · Codex CLI", initials: "Q",
+      status: "Complete", tone: "done", duration: "1m 56s", dependencies: "API + UI branches",
+      summary: "Joined both branches and exercised invitation creation, acceptance, expiry, and replay in a browser flow.",
+      decision: "Add an explicit replay check: the second acceptance must fail and leave the existing membership unchanged.",
+      messages: [{from:"Quinn → Mara",time:"09:58",text:"Both handoffs are green. E2E covers accepted, expired, and replayed links; no membership duplication."}],
+      logs: [["09:52:07","system","Both builder branches available; starting integration."],["09:52:14","qa","$ pnpm test:e2e --project chromium invitation-flow"],["09:54:43","qa","Accepted invite creates one membership."],["09:55:26","qa","Expired invite rejected; membership unchanged."],["09:56:18","qa","Replay rejected with 410; duplicate membership absent."],["09:58:05","qa","<span class='ok'>PASS</span> 8/8 browser scenarios"]]
+    },
+    checks: {
+      type: "CI QUALITY GATE", title: "Required checks", owner: "CI · protected branch", initials: "CI",
+      status: "8 / 8 passed", tone: "done", duration: "4m 12s", dependencies: "API + UI + tests",
+      summary: "Protected-branch checks are all green. The merge gate will re-check required status before accepting the merge.",
+      decision: "Every required check must pass on the reviewed commit. A failed or pending check blocks merge and returns the run to Mara for repair.",
+      messages: [{from:"CI → Mara",time:"10:01",text:"All required checks passed on commit 8af31c2. Branch protection is satisfied."}],
+      logs: [["09:57:02","system","Commit 8af31c2 opened CI checks."],["09:58:12","system","Lint, typecheck, unit, and API checks passed."],["09:59:28","system","Browser E2E and accessibility checks passed."],["10:00:14","system","Build and dependency scan passed."],["10:01:10","system","<span class='ok'>8/8 REQUIRED CHECKS PASSED</span>"]]
+    },
+    pr: {
+      type: "PULL REQUEST · #248", title: "Ready for your review", owner: "Mara · review coordinator", initials: "M",
+      status: "Review needed", tone: "review", duration: "10:02", dependencies: "Checks 8/8 · risk review",
+      summary: "The feature branch is ready. Invitation permissions are outside the low-risk policy, so the PR awaits your review while required checks remain green.",
+      decision: "Auto-merge is armed only for low-risk changes, an approved review, and passing required checks. Any failed check, elevated risk, or requested change pauses the merge.",
+      messages: [{from:"Mara → You",time:"10:02",text:"PR #248 is ready. Please review the API transaction and the settings states; the summary and risk notes are attached."}],
+      logs: [["10:01:12","system","Pull request #248 created from feat/team-invites."],["10:01:16","system","Risk scan: permissions change · review required."],["10:01:18","system","Auto-merge blocked by conservative risk policy."],["10:02:03","manager","<span class='accent'>PR ready for your review.</span>"]]
+    },
+    deploy: {
+      type: "PRODUCTION RELEASE", title: "Deploy after merge", owner: "Release runner", initials: "R",
+      status: "Waiting on PR", tone: "waiting", duration: "Queued", dependencies: "Approved PR #248",
+      summary: "After merge, deploy progressively and verify the service health check before marking the release complete.",
+      decision: "On a failed production health check, alert the user and wait for direction. Keep rollback information available without performing a rollback automatically.",
+      messages: [{from:"Mara → Release runner",time:"queued",text:"Start only after PR #248 merges. Pause rollout if health checks fail."}],
+      logs: [["queue","system","Production release is queued behind PR #248."],["queue","system","Progressive rollout and health check are configured."]]
+    },
+    watch: {
+      type: "PRODUCTION MONITOR", title: "Monitor after deploy", owner: "Mara · manager agent", initials: "M",
+      status: "Armed", tone: "waiting", duration: "Post-deploy", dependencies: "Healthy production deploy",
+      summary: "Once deployed, watch production health and alert Mara if errors or latency cross the agreed threshold.",
+      decision: "On an actionable alert, notify the user and wait for a decision before any retry or rollback.",
+      messages: [{from:"Monitor → Mara",time:"armed",text:"Monitoring starts after production deploy. On threshold breach: pause, alert and wait."}],
+      logs: [["armed","system","Production watch is configured and waiting for deployment."],["armed","system","On failure: stop rollout, alert Mara, await direction."]]
+    }
+  };
+
+  var selectedId = "qa";
+  var inspectorTab = "overview";
+  var dockTab = "terminal";
+  var viewport = document.getElementById("canvasViewport");
+  var world = document.getElementById("canvasWorld");
+  var zoom = 0.8;
+  var offsetX = 0;
+  var offsetY = 0;
+  var toastTimer;
+  var paused = false;
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, function (char) {
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char];
+    });
+  }
+  function showToast(message) {
+    var toast = document.getElementById("toast");
+    toast.textContent = message;
+    toast.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toast.classList.remove("show"); }, 2300);
+  }
+  function applyTransform() {
+    world.style.transform = "translate(" + offsetX + "px," + offsetY + "px) scale(" + zoom + ")";
+    document.getElementById("zoomReadout").textContent = Math.round(zoom * 100) + "%";
+  }
+  function fitCanvas() {
+    var rect = viewport.getBoundingClientRect();
+    zoom = Math.min((rect.width - 28) / 1130, (rect.height - 28) / 625, 1);
+    zoom = Math.max(.45, zoom);
+    offsetX = (rect.width - 1130 * zoom) / 2;
+    offsetY = (rect.height - 625 * zoom) / 2;
+    applyTransform();
+  }
+  function setZoom(next, clientX, clientY) {
+    var rect = viewport.getBoundingClientRect();
+    var cx = typeof clientX === "number" ? clientX - rect.left : rect.width / 2;
+    var cy = typeof clientY === "number" ? clientY - rect.top : rect.height / 2;
+    var pointX = (cx - offsetX) / zoom;
+    var pointY = (cy - offsetY) / zoom;
+    zoom = Math.max(.45, Math.min(1.25, next));
+    offsetX = cx - pointX * zoom;
+    offsetY = cy - pointY * zoom;
+    applyTransform();
+  }
+  function activeData() { return workflow[selectedId]; }
+  function statusMarkup(data) {
+    var tone = data.tone === "review" ? "review" : data.tone === "waiting" ? "waiting" : "";
+    return '<span class="node-status large ' + tone + '"><span class="dot"></span>' + escapeHtml(data.status) + '</span>';
+  }
+  function renderInspector() {
+    var data = activeData();
+    document.getElementById("inspectorType").textContent = data.type.split(" · ")[0];
+    var html = '<div class="selected-intro">' +
+      '<div class="selected-kicker"><span>Selected node</span><span>' + escapeHtml(data.duration) + '</span></div>' +
+      '<div class="selected-title">' + escapeHtml(data.title) + '</div>' +
+      '<div class="selected-subtitle"><span class="avatar-small">' + escapeHtml(data.initials) + '</span>' + escapeHtml(data.owner) + '</div>' +
+      statusMarkup(data) + '</div>' +
+      '<div class="inspector-tabs" role="tablist">' +
+      '<button class="inspector-tab ' + (inspectorTab === "overview" ? "active" : "") + '" data-inspector="overview">Overview</button>' +
+      '<button class="inspector-tab ' + (inspectorTab === "cli" ? "active" : "") + '" data-inspector="cli">CLI</button>' +
+      '<button class="inspector-tab ' + (inspectorTab === "messages" ? "active" : "") + '" data-inspector="messages">Messages</button>' +
+      '<button class="inspector-tab ' + (inspectorTab === "decisions" ? "active" : "") + '" data-inspector="decisions">Decisions</button></div>';
+    if (inspectorTab === "overview") {
+      html += '<div class="info-section"><div class="section-label">Work summary</div><div class="info-copy">' + escapeHtml(data.summary) + '</div></div>' +
+        '<div class="info-section"><div class="section-label">Run details</div><div class="info-card info-grid"><div class="info-cell"><div class="label">Depends on</div><div class="value">' + escapeHtml(data.dependencies) + '</div></div><div class="info-cell"><div class="label">Elapsed / state</div><div class="value mono">' + escapeHtml(data.duration) + '</div></div></div></div>' +
+        '<div class="info-section"><div class="section-label">Decision recorded</div><div class="decision-card"><div class="decision-title">Guardrail</div><div class="decision-copy">' + escapeHtml(data.decision) + '</div></div></div>' +
+        '<button class="inspector-cta" data-open-cli="true">Open this agent’s CLI output ↓</button>';
+    } else if (inspectorTab === "cli") {
+      if (data.logs.length) {
+        html += '<div class="info-section"><div class="section-label">Simulated CLI stream</div><div class="code-card">';
+        data.logs.forEach(function (row) {
+          html += '<div><span class="dim">[' + escapeHtml(row[0]) + ']</span> <span class="prompt">' + escapeHtml(row[1]) + '$</span> ' + row[2] + '</div>';
+        });
+        html += '</div></div><div class="empty-note">Output is simulated for this prototype. No repository or CLI process is connected.</div>';
+      }
+    } else if (inspectorTab === "messages") {
+      html += '<div class="info-section"><div class="section-label">Agent communication</div>';
+      data.messages.forEach(function (message) {
+        html += '<div class="message-card"><div class="message-card-head"><strong>' + escapeHtml(message.from) + '</strong><span>' + escapeHtml(message.time) + '</span></div><p>' + escapeHtml(message.text) + '</p></div>';
+      });
+      html += '</div><div class="empty-note">Builders can hand work to one another. You continue to message Mara only.</div>';
+    } else {
+      html += '<div class="info-section"><div class="section-label">Decision log</div><div class="decision-card"><div class="decision-title">Recorded choice</div><div class="decision-copy">' + escapeHtml(data.decision) + '</div></div></div>' +
+        '<div class="info-section"><div class="section-label">Gate behavior</div><div class="info-card info-copy">' +
+        (selectedId === "pr" ? 'This permissions change requires your review. Every required check must pass before merge; only eligible low-risk changes can auto-merge.' :
+         selectedId === "deploy" || selectedId === "watch" ? 'Deployment waits for merge. A production failure alerts you and waits for your direction; no automatic rollback.' :
+         'The manager keeps the user constraints visible to builders and verifies dependent work before the PR gate.') +
+        '</div></div>';
+    }
+    document.getElementById("inspectorBody").innerHTML = html;
+    document.querySelectorAll(".inspector-tab").forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        inspectorTab = tab.dataset.inspector;
+        renderInspector();
+      });
+    });
+    var open = document.querySelector("[data-open-cli]");
+    if (open) open.addEventListener("click", function () { inspectorTab = "cli"; renderInspector(); });
+  }
+  function selectNode(id) {
+    if (!workflow[id]) return;
+    selectedId = id;
+    document.querySelectorAll(".node, .agent-window").forEach(function (node) {
+      node.classList.toggle("selected", node.dataset.node === id);
+      node.setAttribute("aria-pressed", node.dataset.node === id ? "true" : "false");
+    });
+    inspectorTab = "overview";
+    renderInspector();
+    if (dockTab === "terminal") renderDock();
+  }
+  function renderLogs(rows) {
+    return '<div class="log-list">' + rows.map(function (row) {
+      var sourceClass = row[1] === "ui" ? "ui" : row[1] === "api" ? "api" : row[1] === "system" ? "system" : "";
+      return '<div class="log-line"><span class="log-time">' + escapeHtml(row[0]) + '</span><span class="log-source ' + sourceClass + '">' + escapeHtml(row[1]) + '</span><span class="log-text">' + row[2] + '</span></div>';
+    }).join("") + '</div>';
+  }
+  function renderDock() {
+    var body = document.getElementById("dockBody");
+    document.querySelectorAll(".dock-tab").forEach(function (tab) {
+      tab.classList.toggle("active", tab.dataset.dock === dockTab);
+    });
+    if (dockTab === "terminal") {
+      document.getElementById("dockStatusText").textContent = paused ? "OUTPUT PAUSED · SIMULATED" : "STREAMING SIMULATED OUTPUT";
+      body.innerHTML = renderLogs(activeData().logs);
+    } else if (dockTab === "handoffs") {
+      document.getElementById("dockStatusText").textContent = "BUILDER MESSAGES · SIMULATED";
+      body.innerHTML = '<div class="handoff-list">' +
+        '<div class="handoff-row"><span class="handoff-arrow">↗</span><span><b style="color:#d1c5ff">Mara → Ari + Uma</b> · API and settings UI can proceed in parallel. Share the contract directly when it is stable.</span><span class="handoff-time">09:15</span></div>' +
+        '<div class="handoff-row"><span class="handoff-arrow">↔</span><span><b style="color:#d1c5ff">Ari ↔ Uma</b> · Invite payload confirmed; consumed or expired token returns <code>410</code>. UI builder continues against the shared contract.</span><span class="handoff-time">09:42</span></div>' +
+        '<div class="handoff-row"><span class="handoff-arrow">↘</span><span><b style="color:#d1c5ff">Ari + Uma → Quinn</b> · Both branches ready. E2E builder joined API and UI branches and completed the acceptance, expiry and replay flows.</span><span class="handoff-time">09:52</span></div></div>';
+    } else {
+      document.getElementById("dockStatusText").textContent = "MERGE GATES · SIMULATED";
+      body.innerHTML = '<div class="gate-list">' +
+        '<div class="gate-row"><span class="gate-check" style="color:var(--amber);background:var(--amber-dim)">!</span><span>Invitation permissions require your review</span><span class="gate-note">awaiting</span></div>' +
+        '<div class="gate-row"><span class="gate-check">✓</span><span>All protected branch checks pass</span><span class="gate-note">8 / 8 green</span></div>' +
+        '<div class="gate-row"><span class="gate-check" style="color:var(--amber);background:var(--amber-dim)">!</span><span>Auto-merge excluded by risk policy</span><span class="gate-note">permissions</span></div>' +
+        '<div class="gate-row"><span class="gate-check" style="color:var(--amber);background:var(--amber-dim)">…</span><span>Wait for your review; block merge if any check fails</span><span class="gate-note">held</span></div></div>';
+    }
+  }
+
+  document.querySelectorAll(".node, .agent-window").forEach(function (node) {
+    node.addEventListener("click", function (event) { event.stopPropagation(); selectNode(node.dataset.node); });
+    node.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.dataset.node); }
+    });
+  });
+  document.querySelectorAll(".dock-tab").forEach(function (tab) {
+    tab.addEventListener("click", function () { dockTab = tab.dataset.dock; renderDock(); });
+  });
+  document.getElementById("zoomIn").addEventListener("click", function () { setZoom(zoom * 1.12); });
+  document.getElementById("zoomOut").addEventListener("click", function () { setZoom(zoom / 1.12); });
+  document.getElementById("fitCanvas").addEventListener("click", fitCanvas);
+  window.addEventListener("resize", fitCanvas);
+  document.getElementById("panelToggle").addEventListener("click", function () {
+    var focused = document.getElementById("appShell").classList.toggle("canvas-focus");
+    this.textContent = focused ? "Show manager + details" : "Focus CLI canvas";
+    fitCanvas();
+  });
+
+  var replayButton = document.getElementById("replayCoordination");
+  var coordinationEvent = document.getElementById("coordinationEvent");
+  var managerTerminal = document.getElementById("managerTerminal");
+  var settledManagerOutput = managerTerminal.innerHTML;
+  function wait(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+  function announceCoordination(message) {
+    coordinationEvent.textContent = message;
+    coordinationEvent.classList.add("visible");
+  }
+  function spawnAgent(id) {
+    var windowNode = document.querySelector(".agent-window." + id + "-cli");
+    windowNode.classList.remove("unspawned");
+    windowNode.classList.add("spawning");
+    setTimeout(function () { windowNode.classList.remove("spawning"); }, 500);
+  }
+  function passMessage(routeId, message) {
+    return new Promise(function (resolve) {
+      var route = document.getElementById(routeId);
+      var packet = document.getElementById("messagePacket");
+      var length = route.getTotalLength();
+      var started;
+      announceCoordination(message);
+      route.classList.add("active");
+      packet.classList.add("active");
+      function frame(time) {
+        if (!started) started = time;
+        var progress = Math.min((time - started) / 1250, 1);
+        var point = route.getPointAtLength(progress * length);
+        packet.setAttribute("cx", point.x);
+        packet.setAttribute("cy", point.y);
+        if (progress < 1) requestAnimationFrame(frame);
+        else { route.classList.remove("active"); packet.classList.remove("active"); resolve(); }
+      }
+      requestAnimationFrame(frame);
+    });
+  }
+  replayButton.addEventListener("click", async function () {
+    replayButton.disabled = true;
+    replayButton.textContent = "Replaying…";
+    document.querySelectorAll(".agent-window:not(.manager-cli)").forEach(function (node) { node.classList.add("unspawned"); });
+    selectNode("manager");
+    managerTerminal.textContent = '$ codex exec "coordinate run #184"\nPlanning API + UI slices…\nCreating agent worktrees…';
+    announceCoordination("Mara creates an isolated worktree and spawns Ari · API builder");
+    await wait(1000);
+    spawnAgent("api");
+    managerTerminal.textContent += '\n✓ Ari spawned in agent/api-invites';
+    await wait(850);
+    announceCoordination("Mara creates a second worktree and spawns Uma · UI builder");
+    await wait(850);
+    spawnAgent("ui");
+    managerTerminal.textContent += '\n✓ Uma spawned in agent/ui-invites';
+    await wait(650);
+    await passMessage("routeApiUi", "Ari → Uma: invitation payload and expiry contract");
+    await passMessage("routeUiManager", "Uma → Mara: UI is ready against the agreed API contract");
+    announceCoordination("Mara spawns Quinn after both builder handoffs are ready");
+    await wait(950);
+    spawnAgent("qa");
+    managerTerminal.textContent += '\n✓ Quinn spawned after builder handoffs';
+    await wait(550);
+    await passMessage("routeManagerQa", "Mara → Quinn: verify API + UI together, including replay and expiry");
+    announceCoordination("All Codex CLI sessions are visible · PR awaits your review");
+    managerTerminal.innerHTML = settledManagerOutput;
+    await wait(2000);
+    coordinationEvent.classList.remove("visible");
+    replayButton.disabled = false;
+    replayButton.textContent = "▶ Replay agent coordination";
+  });
+
+  var pointer = null;
+  viewport.addEventListener("pointerdown", function (event) {
+    if (event.target.closest(".node, .agent-window")) return;
+    pointer = {x:event.clientX, y:event.clientY, ox:offsetX, oy:offsetY, id:event.pointerId};
+    viewport.setPointerCapture(event.pointerId);
+    viewport.classList.add("dragging");
+  });
+  viewport.addEventListener("pointermove", function (event) {
+    if (!pointer || pointer.id !== event.pointerId) return;
+    offsetX = pointer.ox + event.clientX - pointer.x;
+    offsetY = pointer.oy + event.clientY - pointer.y;
+    applyTransform();
+  });
+  function endPan(event) {
+    if (pointer && pointer.id === event.pointerId) {
+      pointer = null;
+      viewport.classList.remove("dragging");
+    }
+  }
+  viewport.addEventListener("pointerup", endPan);
+  viewport.addEventListener("pointercancel", endPan);
+  viewport.addEventListener("wheel", function (event) {
+    event.preventDefault();
+    setZoom(zoom * (event.deltaY < 0 ? 1.08 : 1 / 1.08), event.clientX, event.clientY);
+  }, {passive:false});
+
+  document.getElementById("pauseButton").addEventListener("click", function () {
+    paused = !paused;
+    this.textContent = paused ? "Resume run" : "Pause run";
+    var state = document.getElementById("runState");
+    state.innerHTML = paused ? '<span class="dot" style="color:var(--amber)"></span> RUN PAUSED' : '<span class="dot"></span> RUN ACTIVE';
+    state.style.color = paused ? "var(--amber)" : "var(--mint)";
+    state.style.borderColor = paused ? "rgba(240,196,119,.25)" : "rgba(130,226,189,.2)";
+    renderDock();
+    showToast(paused ? "Simulation paused" : "Simulation resumed");
+  });
+
+  document.getElementById("chatForm").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var input = document.getElementById("chatInput");
+    var text = input.value.trim();
+    if (!text) return;
+    var feed = document.getElementById("chatFeed");
+    var user = document.createElement("div");
+    user.className = "message user";
+    user.innerHTML = '<div class="message-meta"><span>now</span><strong>You</strong></div><div class="message-bubble"></div>';
+    user.querySelector(".message-bubble").textContent = text;
+    feed.appendChild(user);
+    var reply = document.createElement("div");
+    reply.className = "message";
+    reply.innerHTML = '<div class="message-meta"><strong>Mara</strong><span>now</span></div><div class="message-bubble"></div>';
+    reply.querySelector(".message-bubble").textContent = "Noted for this simulated run. I’ll keep that constraint visible to the builders and preserve the existing review and deployment gates.";
+    feed.appendChild(reply);
+    feed.scrollTop = feed.scrollHeight;
+    input.value = "";
+  });
+  document.getElementById("chatInfo").addEventListener("click", function () {
+    showToast("Your messages go to Mara; builder-to-builder messages stay visible in the run.");
+  });
+  document.getElementById("copyNode").addEventListener("click", function () {
+    showToast("Node reference: " + selectedId + " · simulated workspace");
+  });
+
+  var workspaceOverlay = document.getElementById("workspaceOverlay");
+  function setWorkspaceOpen(open) {
+    workspaceOverlay.classList.toggle("open", open);
+    workspaceOverlay.setAttribute("aria-hidden", open ? "false" : "true");
+  }
+  document.getElementById("allRunsButton").addEventListener("click", function () { setWorkspaceOpen(true); });
+  document.getElementById("worktreesButton").addEventListener("click", function () { setWorkspaceOpen(true); });
+  document.getElementById("closeWorkspace").addEventListener("click", function () { setWorkspaceOpen(false); });
+  document.querySelector('[data-open-run="184"]').addEventListener("click", function () { setWorkspaceOpen(false); });
+  document.querySelectorAll("[data-demo-run]").forEach(function (button) {
+    button.addEventListener("click", function () { showToast("Run #" + button.dataset.demoRun + " is an illustrative linked task in this prototype."); });
+  });
+  document.querySelectorAll("[data-worktree-action]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var action = button.dataset.worktreeAction;
+      var name = button.dataset.worktree || "new task";
+      showToast(action === "archive" ? "Simulation: check for uncommitted work before archiving " + name : action === "create" ? "Simulation: manager creates an isolated worktree for a new task" : "Simulation: inspect " + name + " status, branch and changed files");
+    });
+  });
+  document.addEventListener("keydown", function (event) { if (event.key === "Escape") setWorkspaceOpen(false); });
+
+  document.getElementById("dockBody").addEventListener("click", function (event) {
+    if (event.target.closest("[data-open-node]")) selectNode(event.target.closest("[data-open-node]").dataset.openNode);
+  });
+
+  selectNode(selectedId);
+  renderDock();
+  fitCanvas();
+})();
+</script>
+</body>
+</html>
