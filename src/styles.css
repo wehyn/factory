@@ -1,0 +1,136 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #e7ecf5;
+  background: #0a0e14;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse at 14% 12%, rgba(63, 92, 143, 0.14), transparent 38%),
+    radial-gradient(ellipse at 92% 82%, rgba(105, 83, 155, 0.1), transparent 34%),
+    #0a0e14;
+}
+
+button, input { font: inherit; }
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 34px clamp(24px, 5vw, 68px) 26px;
+}
+
+.topbar { display: flex; align-items: center; gap: 14px; }
+.brand-mark {
+  display: grid;
+  width: 43px;
+  height: 43px;
+  place-items: center;
+  border: 1px solid #9cb8e65c;
+  border-radius: 14px;
+  color: #d8e5ff;
+  background: linear-gradient(145deg, #314769, #182336);
+  box-shadow: 0 8px 24px #0005;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  color: #8492a7;
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+.service-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: #9caaba;
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.service-state span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #80dbb3;
+  box-shadow: 0 0 11px #80dbb380;
+}
+
+.welcome-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  width: min(100%, 940px);
+  margin: auto;
+  padding: clamp(34px, 7vw, 78px);
+  border: 1px solid #293447;
+  border-radius: 25px;
+  background: linear-gradient(137deg, #141c29ef, #111720ed 60%, #191b28ee);
+  box-shadow: 0 32px 90px #0006, inset 0 1px #ffffff07;
+}
+
+.welcome-card::before {
+  position: absolute;
+  z-index: -1;
+  top: -190px;
+  right: -112px;
+  width: 490px;
+  height: 490px;
+  border: 1px solid #8baee31b;
+  border-radius: 50%;
+  content: "";
+  box-shadow: 0 0 0 36px #8baee308, 0 0 0 72px #8baee305;
+}
+
+.welcome-orbit { position: absolute; top: 72px; right: 82px; width: 120px; height: 120px; opacity: .7; }
+.welcome-orbit span { position: absolute; inset: 0; border: 1px solid #91b3ef42; border-radius: 50%; transform: rotate(35deg) scaleX(.45); }
+.welcome-orbit span:nth-child(2) { transform: rotate(95deg) scaleX(.45); }
+.welcome-orbit span:nth-child(3) { inset: 52px; border: 0; background: #b3cdff; box-shadow: 0 0 18px #9bbcff; }
+
+.welcome-card h2 {
+  max-width: 590px;
+  margin: 17px 0 15px;
+  color: #eff4ff;
+  font-size: clamp(32px, 4.6vw, 54px);
+  font-weight: 600;
+  letter-spacing: -0.055em;
+  line-height: 1.1;
+}
+.welcome-copy { max-width: 560px; margin: 0; color: #a2afc1; font-size: 14px; line-height: 1.8; }
+.welcome-note {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 32px;
+  padding: 14px 16px;
+  border: 1px solid #293749;
+  border-radius: 12px;
+  background: #0d131d99;
+}
+.note-icon { color: #98b9ed; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 19px; }
+.welcome-note p { margin: 0; color: #9eaaba; font-size: 12px; }
+.footer { display: flex; justify-content: space-between; color: #667386; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; letter-spacing: .04em; }
+
+@media (max-width: 700px) {
+  .shell { padding: 24px 18px 20px; }
+  .welcome-card { padding: 36px 25px; }
+  .welcome-orbit { top: 24px; right: 28px; width: 80px; height: 80px; }
+  .welcome-copy { font-size: 13px; }
+}
