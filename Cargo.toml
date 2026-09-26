@@ -8,6 +8,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
+libc = "0.2"
 regex = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
