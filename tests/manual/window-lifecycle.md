@@ -6,5 +6,7 @@
 ## Recorded status — 2026-09-26
 
 - Baseline scaffold: closing its only window with Cmd-W ended the process.
-- Resident handler: the packaged Agentic Factory app hid after Cmd-W; the CUA surface reported no visible windows, and pgrep -fl agentic-factory still showed PID 30593.
-- The tray Open and Quit menu actions are implemented and compiled. The desktop automation surface does not expose the menu-bar extra after the window is hidden, so steps 3 and 4 still need a direct manual click on macOS.
+- Packaged release: closing the main window hid it while PID 49185 remained alive with its Codex App Server child.
+- Tray Open: selected directly from the macOS tray menu; it restored the same PID and the completed `hello` output.
+- Tray Quit: selected directly from the macOS tray menu; PID 49185 and its App Server child exited.
+- Restart recovery: the final release reopened as PID 55617 and displayed the same `Completed` session and `hello` output. The SQLite ledger still contained exactly five ordered events (`session_created`, `session_started`, `turn_started`, `output`, `turn_completed`), and no Codex App Server process started on relaunch.

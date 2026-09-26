@@ -1,4 +1,4 @@
-use crate::{Event, EventKind, Ledger, RedactedOutput, SessionId};
+use crate::{Event, EventKind, Ledger, RedactedOutput, SessionId, SessionProcessState};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -29,6 +29,16 @@ struct ProtocolState {
     startup_failure_recorded: bool,
 }
 
+fn should_record_thread_started(state: &ProtocolState, thread_id: &str) -> bool {
+    !state.startup_failure_recorded
+        && state.terminal_turns.is_empty()
+        && state.thread_id.as_deref() != Some(thread_id)
+}
+
+fn should_ignore_late_turn_notification(state: &ProtocolState) -> bool {
+    state.startup_failure_recorded || !state.terminal_turns.is_empty()
+}
+
 struct RunnerShared {
     ledger: Arc<Ledger>,
     session_id: SessionId,
@@ -50,7 +60,13 @@ pub struct CodexRunner {
 
 impl CodexRunner {
     pub fn start(cwd: &Path, ledger: Arc<Ledger>, session_id: SessionId) -> Result<Self> {
-        let executable = resolve_codex_binary()?;
+        let executable = match resolve_codex_binary() {
+            Ok(executable) => executable,
+            Err(error) => {
+                record_start_failure(&ledger, session_id, &error.to_string())?;
+                return Err(error);
+            }
+        };
         let mut command = Command::new(executable);
         command.args(["app-server", "--stdio"]);
         Self::start_with_command(command, cwd, ledger, session_id)
@@ -59,6 +75,19 @@ impl CodexRunner {
     /// Starts a runner with an injected executable for protocol integration tests.
     #[doc(hidden)]
     pub fn start_with_command(
+        command: Command,
+        cwd: &Path,
+        ledger: Arc<Ledger>,
+        session_id: SessionId,
+    ) -> Result<Self> {
+        let result = Self::start_with_command_inner(command, cwd, Arc::clone(&ledger), session_id);
+        if let Err(error) = &result {
+            record_start_failure(&ledger, session_id, &error.to_string())?;
+        }
+        result
+    }
+
+    fn start_with_command_inner(
         mut command: Command,
         cwd: &Path,
         ledger: Arc<Ledger>,
@@ -177,7 +206,14 @@ impl CodexRunner {
         let turn_id = result
             .pointer("/turn/id")
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("Codex App Server turn/start result lacked turn.id"))?;
+            .ok_or_else(|| anyhow!("Codex App Server turn/start result lacked turn.id"));
+        let turn_id = match turn_id {
+            Ok(turn_id) => turn_id,
+            Err(error) => {
+                self.shared.record_failure(&error.to_string())?;
+                return Err(error);
+            }
+        };
         self.shared.record_turn_started(turn_id)?;
         Ok(())
     }
@@ -376,6 +412,31 @@ impl Drop for CodexRunner {
     }
 }
 
+fn record_start_failure(ledger: &Ledger, session_id: SessionId, message: &str) -> Result<()> {
+    let snapshot = ledger.snapshot()?;
+    let terminal = snapshot
+        .sessions
+        .iter()
+        .find(|session| session.session_id == session_id)
+        .is_some_and(|session| {
+            matches!(
+                session.process_state,
+                SessionProcessState::Completed
+                    | SessionProcessState::Interrupted
+                    | SessionProcessState::Failed
+            )
+        });
+    if !terminal {
+        ledger.append(&Event::new(
+            session_id,
+            EventKind::SessionFailed {
+                message: RedactedOutput::new(message),
+            },
+        ))?;
+    }
+    Ok(())
+}
+
 fn resolve_codex_binary() -> Result<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("PATH") {
@@ -407,6 +468,38 @@ fn resolve_codex_binary() -> Result<PathBuf> {
         .into_iter()
         .find(|path| path.is_file())
         .ok_or_else(|| anyhow!("Codex CLI was not found on PATH or in common macOS install paths"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_ignore_late_turn_notification, should_record_thread_started, ProtocolState,
+    };
+    use std::collections::HashSet;
+
+    #[test]
+    fn ignores_late_thread_start_after_startup_failure() {
+        let state = ProtocolState {
+            thread_id: None,
+            active_turn: None,
+            terminal_turns: HashSet::new(),
+            startup_failure_recorded: true,
+        };
+
+        assert!(!should_record_thread_started(&state, "late-thread"));
+    }
+
+    #[test]
+    fn ignores_late_turn_notifications_after_startup_failure() {
+        let state = ProtocolState {
+            thread_id: Some("thread".to_owned()),
+            active_turn: None,
+            terminal_turns: HashSet::new(),
+            startup_failure_recorded: true,
+        };
+
+        assert!(should_ignore_late_turn_notification(&state));
+    }
 }
 
 fn read_server_output<R: Read>(mut reader: R, shared: Arc<RunnerShared>) {
@@ -582,7 +675,7 @@ impl RunnerShared {
             .state
             .lock()
             .map_err(|_| anyhow!("Codex runner state lock was poisoned"))?;
-        if state.thread_id.as_deref() == Some(thread_id) {
+        if !should_record_thread_started(&state, thread_id) {
             return Ok(());
         }
         self.append(EventKind::SessionStarted {
@@ -597,7 +690,9 @@ impl RunnerShared {
             .state
             .lock()
             .map_err(|_| anyhow!("Codex runner state lock was poisoned"))?;
-        if state.terminal_turns.contains(turn_id) || state.active_turn.as_deref() == Some(turn_id) {
+        if should_ignore_late_turn_notification(&state)
+            || state.active_turn.as_deref() == Some(turn_id)
+        {
             return Ok(());
         }
         if state.active_turn.is_some() {
@@ -632,6 +727,9 @@ impl RunnerShared {
             .state
             .lock()
             .map_err(|_| anyhow!("Codex runner state lock was poisoned"))?;
+        if should_ignore_late_turn_notification(&state) {
+            return Ok(());
+        }
         if !state.terminal_turns.insert(turn_id.to_owned()) {
             return Ok(());
         }

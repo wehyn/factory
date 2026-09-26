@@ -7,13 +7,19 @@ use rusqlite::{params, Connection};
 use std::{
     collections::HashMap,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, Mutex,
+    },
 };
 use uuid::Uuid;
+
+const MAX_SNAPSHOT_OUTPUTS: usize = 40;
 
 #[derive(Clone)]
 pub struct Ledger {
     connection: Arc<Mutex<Connection>>,
+    subscribers: Arc<Mutex<Vec<Sender<SequencedEvent>>>>,
 }
 
 impl Ledger {
@@ -35,7 +41,17 @@ impl Ledger {
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    pub fn subscribe(&self) -> Result<Receiver<SequencedEvent>> {
+        let (sender, receiver) = mpsc::channel();
+        self.subscribers
+            .lock()
+            .map_err(|_| anyhow!("event subscriber lock was poisoned"))?
+            .push(sender);
+        Ok(receiver)
     }
 
     pub fn append(&self, event: &Event) -> Result<i64> {
@@ -83,7 +99,14 @@ impl Ledger {
             return Err(anyhow!("event ID was reused with different content"));
         }
         transaction.commit()?;
-        drop(connection);
+
+        let published = SequencedEvent {
+            sequence,
+            event: event.clone(),
+        };
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            subscribers.retain(|subscriber| subscriber.send(published.clone()).is_ok());
+        }
 
         Ok(sequence)
     }
@@ -172,7 +195,12 @@ impl Ledger {
                 EventKind::TurnStarted { .. } => {
                     session.process_state = SessionProcessState::Running;
                 }
-                EventKind::Output(output) => session.output.push(output.as_str().to_owned()),
+                EventKind::Output(output) => {
+                    if session.output.len() == MAX_SNAPSHOT_OUTPUTS {
+                        session.output.remove(0);
+                    }
+                    session.output.push(output.as_str().to_owned());
+                }
                 EventKind::TurnCompleted => {
                     session.process_state = SessionProcessState::Completed;
                 }

@@ -201,6 +201,25 @@ fn shutdown_terminates_the_server_process_group() -> anyhow::Result<()> {
 }
 
 #[test]
+fn failed_to_spawn_server_marks_session_failed() -> anyhow::Result<()> {
+    let harness = FakeServer::new()?;
+    let ledger = harness.ledger();
+    let missing_executable = harness.repo().join("missing-codex-server");
+    let result = CodexRunner::start_with_command(
+        Command::new(missing_executable),
+        harness.repo(),
+        Arc::clone(&ledger),
+        harness.session(),
+    );
+
+    assert!(result.is_err());
+    let session = &ledger.snapshot()?.sessions[0];
+    assert_eq!(session.process_state, SessionProcessState::Failed);
+    assert_eq!(session.failure_count, 1);
+    Ok(())
+}
+
+#[test]
 fn rejects_oversized_jsonl_and_records_a_single_failure() -> anyhow::Result<()> {
     let harness = FakeServer::new()?;
     let ledger = harness.ledger();

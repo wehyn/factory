@@ -116,6 +116,80 @@ fn restart_recovery_interrupts_sessions_without_a_supervised_child() -> anyhow::
 }
 
 #[test]
+fn subscribers_receive_committed_events_with_the_ledger_sequence() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("ledger.sqlite");
+    let writer = Ledger::open(&path)?;
+    let reader = Ledger::open(&path)?;
+    let events = writer.subscribe()?;
+    let event = Event::new(
+        SessionId(uuid::Uuid::new_v4()),
+        EventKind::Output(RedactedOutput::new("hello")),
+    );
+
+    assert_eq!(writer.append(&event)?, 1);
+    let published = events.recv_timeout(std::time::Duration::from_secs(1))?;
+    assert_eq!(published.sequence, 1);
+    assert_eq!(published.event, event);
+    assert_eq!(reader.snapshot()?.last_sequence, published.sequence);
+    Ok(())
+}
+
+#[test]
+fn subscribers_do_not_drop_or_reorder_events_when_a_burst_exceeds_the_queue_capacity(
+) -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let ledger = Ledger::open(&temp.path().join("ledger.sqlite"))?;
+    let events = ledger.subscribe()?;
+    let session_id = SessionId(uuid::Uuid::new_v4());
+    let writers = (0..4)
+        .map(|worker| {
+            let ledger = ledger.clone();
+            std::thread::spawn(move || {
+                for index in 0..100 {
+                    ledger
+                        .append(&Event::new(
+                            session_id,
+                            EventKind::Output(RedactedOutput::new(format!("{worker}-{index}"))),
+                        ))
+                        .unwrap();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for writer in writers {
+        writer.join().expect("ledger writer did not panic");
+    }
+
+    for expected_sequence in 1..=400 {
+        let event = events.recv_timeout(std::time::Duration::from_secs(1))?;
+        assert_eq!(event.sequence, expected_sequence);
+    }
+    Ok(())
+}
+
+#[test]
+fn recovered_snapshot_keeps_only_the_most_recent_forty_outputs() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let ledger = Ledger::open(&temp.path().join("ledger.sqlite"))?;
+    let session_id = SessionId(uuid::Uuid::new_v4());
+    ledger.append(&Event::new(session_id, EventKind::SessionCreated))?;
+    for index in 0..45 {
+        ledger.append(&Event::new(
+            session_id,
+            EventKind::Output(RedactedOutput::new(format!("output-{index}"))),
+        ))?;
+    }
+
+    let output = &ledger.snapshot()?.sessions[0].output;
+    assert_eq!(output.len(), 40);
+    assert_eq!(output.first().map(String::as_str), Some("output-5"));
+    assert_eq!(output.last().map(String::as_str), Some("output-44"));
+    Ok(())
+}
+
+#[test]
 fn rejects_reusing_an_event_id_with_different_content() -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let ledger = Ledger::open(&temp.path().join("ledger.sqlite"))?;
