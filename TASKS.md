@@ -41,4 +41,4 @@ Owner: root agent
 - Status: COMPLETE
 - Acceptance: snapshot loads on reconnect, event gaps reload from the ledger, only disposable-repository turns can be started, and session output remains read-only and redacted.
 - Verification evidence: frontend tests passed snapshot restoration, output delivery, read-only UI, gap reload, and the 40-output live-state bound. `npm run build`, `cargo test --workspace`, `cargo fmt --all -- --check`, `git diff --check`, and `npm run tauri build` passed. The packaged app completed the harmless real Codex turn and displayed `hello`; closing hid the window without exiting PID 49185; tray Open restored the same PID and output; tray Quit exited the app and App Server. After relaunch, the final build restored the same five-event completed snapshot in PID 55617 without starting another Codex process.
-- Commit: pending
+- Commit: 40b659be0cae3a0d78b6dc92832de133aba3aec3
