@@ -93,24 +93,24 @@ The roadmap IDs below refer to `outputs/agentic-factory-implementation-plan.md`;
 - Owner: root
 - Scope: `crates/factory-core/src/{github,policy}.rs`, `crates/factory-core/tests/merge_gate.rs`, `docs/repository-config.md`
 - Dependencies: R6 integrated commits and review evidence
-- Status: NOT STARTED
+- Status: IMPLEMENTED; live GitHub acceptance pending
 - Acceptance: `gh` observation and idempotent PR actions; current-head required-check revalidation immediately before merge; risk policy blocks security, permission, migration, deployment, secret, privacy, and public-interface changes from auto-merge; PR bodies include durable evidence.
-- Verification evidence: pending
+- Verification evidence: fixture-backed PR creation, durable idempotency receipts, required-check parsing, current-head revalidation, risk policy, evidence-rich PR bodies, and integration-branch binding are covered by `cargo test --workspace`. A mismatched PR number is rejected without occupying the run's tracked-PR slot; a subsequent intended PR can still be created. `origin` now points to the empty public project repository `wehyn/factory`; live gate acceptance still needs separate disposable repositories and their branch/check/review setup.
 
 ### Roadmap Task 9: Production observation and alerts (R9)
 
 - Owner: root
 - Scope: `crates/factory-core/src/production.rs`, Tauri notifications/runtime, `docs/repository-config.md`, production-watch tests and UI
 - Dependencies: R8 merged-commit/deployment identity
-- Status: NOT STARTED
+- Status: IMPLEMENTED; live production acceptance pending
 - Acceptance: matching deployment and passing smoke check becomes healthy; failure persists an alert and waits without rollback/retry; missing evidence becomes unverified and alerts; state survives restart and window hiding.
-- Verification evidence: pending
+- Verification evidence: fake-HTTP identity and smoke outcomes, durable alerts/acknowledgements, restart recovery, and the no-automatic-retry/rollback behavior are covered by `cargo test --workspace`. Live deployment identity and smoke checks remain pending because no production test environment is configured.
 
 ### Roadmap Task 10: Full acceptance and release readiness (R10)
 
 - Owner: root
 - Scope: `tests/e2e/factory-run.md`, README, user-facing errors, app/runtime acceptance
 - Dependencies: R4–R9
-- Status: NOT STARTED
+- Status: LOCAL VERIFICATION COMPLETE; full acceptance pending
 - Acceptance: two disposable repositories exercise concurrent linked runs, isolated workers, real Codex output, GitHub gate outcomes, production watch, window close/reopen, and controlled restart without duplicate actions; release checks and evidence are recorded.
-- Verification evidence: pending
+- Verification evidence: the full workspace Rust suite, frontend tests/build, and regular plus isolated-preview Tauri debug bundles are verified locally. The three normally ignored App Server/MCP/parallel-worker integration cases were run individually and passed. The isolated preview app was visually reviewed at 2160×1440 without replacing the installed app. Two-repository GitHub and production-watch acceptance, plus active-run close/reopen/restart acceptance against the final bundle, remain pending; see `tests/e2e/factory-run.md`.

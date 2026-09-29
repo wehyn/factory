@@ -1,9 +1,14 @@
 use anyhow::Context;
 use factory_core::{
-    AgentMessage, CodexRunner, CodexWorkerLauncher, Event, EventKind, FactoryMcpConfig, Ledger,
-    Mailbox, ManagerChatMessage, ManagerChatRole, RedactedOutput, RepoId, Repository,
-    RepositoryRegistry, RunId, RunRecord, Scheduler, SchedulerBlocker, SessionId, SessionSnapshot,
-    SliceAssignment, SliceStatus, Worktree, WorktreeManager, WorktreeStatus,
+    create_pull_request as create_pull_request_state, evaluate_production,
+    evaluate_pull_request_gate as evaluate_pr_gate, load_production_policy, load_repository_policy,
+    try_merge_pull_request, AgentMessage, CodexRunner, CodexWorkerLauncher, Event, EventKind,
+    ExpectedPullRequestHead, FactoryMcpConfig, GitHubCli, Ledger, Mailbox, ManagerChatMessage,
+    ManagerChatRole, MergeAttempt, ProductionInput, ProductionObserver, ProductionRunState,
+    ProductionStatus, PullRequestEvidence, PullRequestRecord, PullRequestStatus, RedactedOutput,
+    RepoId, Repository, RepositoryRegistry, RunId, RunRecord, Scheduler, SchedulerBlocker,
+    SessionId, SessionSnapshot, SliceAssignment, SliceStatus, SmokeCheckState, Worktree,
+    WorktreeManager, WorktreeStatus,
 };
 use serde::Serialize;
 use std::{
@@ -21,6 +26,7 @@ use tauri::{
     tray::TrayIconBuilder,
     Emitter, Manager,
 };
+use tauri_plugin_notification::NotificationExt;
 
 const MANAGER_WORKSPACE_README: &str = "Private Agentic Factory manager conversation workspace.\n";
 const MANAGER_PROMPT_MAX_CHARS: usize = 8_000;
@@ -47,7 +53,9 @@ struct RunHomeView {
     integration_ready: bool,
     integration_gate: String,
     pr_gate: String,
+    pull_request: Option<PullRequestRecord>,
     production_gate: String,
+    production: Option<ProductionRunState>,
     worktrees: Vec<WorktreeHomeView>,
     agents: Vec<AgentCanvasView>,
     messages: Vec<AgentMessage>,
@@ -81,6 +89,8 @@ struct AppState {
     scheduler: Scheduler,
     scheduler_monitor_stop: Arc<AtomicBool>,
     scheduler_monitor: Mutex<Option<thread::JoinHandle<()>>>,
+    production_monitor_stop: Arc<AtomicBool>,
+    production_monitor: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl AppState {
@@ -92,6 +102,14 @@ impl AppState {
             }
         }
         let _ = self.scheduler.shutdown();
+        if !self.production_monitor_stop.swap(true, Ordering::SeqCst) {
+            if let Ok(mut monitor) = self.production_monitor.lock() {
+                if let Some(monitor) = monitor.take() {
+                    let _ = monitor.join();
+                }
+            }
+            let _ = self.ledger.mark_production_monitor_stopped(now_ms());
+        }
         if let Ok(mut runner) = self.manager_runner.lock() {
             if let Some(runner) = runner.as_mut() {
                 let _ = runner.shutdown();
@@ -180,6 +198,208 @@ fn link_runs(
         )
         .map(|_| ())
         .map_err(safe_error)
+}
+
+#[tauri::command]
+fn observe_pull_request(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+    number: u64,
+) -> Result<PullRequestRecord, String> {
+    let run_id = parse_run_id(&run_id).map_err(safe_error)?;
+    let run = state
+        .ledger
+        .list_runs()
+        .map_err(safe_error)?
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .ok_or_else(|| "Run was not found".to_owned())?;
+    let repository = state.repositories.get(run.repo_id).map_err(safe_error)?;
+    let policy = load_repository_policy(&repository.canonical_root).map_err(safe_error)?;
+    let integration = state
+        .worktrees
+        .integration_worktree(run_id)
+        .map_err(safe_error)?;
+    let expected_head = ExpectedPullRequestHead {
+        head_branch: integration.branch_name.clone(),
+        base_branch: repository.default_branch.clone(),
+        head_sha: inspect_integration_head(&integration).map_err(safe_error)?,
+    };
+    evaluate_pr_gate(
+        &GitHubCli::new(),
+        &state.ledger,
+        &run,
+        &repository,
+        &policy,
+        &expected_head,
+        number,
+    )
+    .map_err(safe_error)
+}
+
+#[tauri::command]
+fn create_run_pull_request(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+    mut evidence: PullRequestEvidence,
+) -> Result<PullRequestRecord, String> {
+    let run_id = parse_run_id(&run_id).map_err(safe_error)?;
+    let run = state
+        .ledger
+        .list_runs()
+        .map_err(safe_error)?
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .ok_or_else(|| "Run was not found".to_owned())?;
+    let repository = state.repositories.get(run.repo_id).map_err(safe_error)?;
+    let idempotency_key = format!("create-pr:{run_id}");
+    if let Some(action) = state
+        .ledger
+        .github_action(&idempotency_key)
+        .map_err(safe_error)?
+    {
+        if action.completed {
+            return serde_json::from_str(&action.result_json.unwrap_or_default())
+                .map_err(safe_error);
+        }
+        return Err(
+            "A previous PR creation is unresolved; refresh GitHub before retrying".to_owned(),
+        );
+    }
+    if state
+        .ledger
+        .latest_pull_request(run_id)
+        .map_err(safe_error)?
+        .is_some()
+    {
+        return Err("This run already has a tracked pull request".to_owned());
+    }
+    if !state
+        .scheduler
+        .integration_ready(run_id)
+        .map_err(safe_error)?
+    {
+        return Err("All run slices must be integrated before creating a pull request".to_owned());
+    }
+    if evidence.change_summary.trim().is_empty() || evidence.verification.is_empty() {
+        return Err("A change summary and verification evidence are required".to_owned());
+    }
+    if evidence
+        .verification
+        .iter()
+        .all(|item| item.trim().is_empty())
+    {
+        return Err("At least one verification result is required".to_owned());
+    }
+    if evidence.independent_review.is_empty() {
+        evidence.independent_review.push(
+            "No independent review recorded at PR creation; current-head GitHub approval remains required by repository policy.".to_owned(),
+        );
+    }
+    let integration = state
+        .worktrees
+        .integration_worktree(run_id)
+        .map_err(safe_error)?;
+    let integration_sha = publish_integration_branch(&integration).map_err(safe_error)?;
+    let expected_head = ExpectedPullRequestHead {
+        head_branch: integration.branch_name.clone(),
+        base_branch: repository.default_branch.clone(),
+        head_sha: integration_sha.clone(),
+    };
+    evidence.worktree_commits.push(format!(
+        "Integration branch {} HEAD {}",
+        integration.branch_name, integration_sha
+    ));
+    for record in state
+        .scheduler
+        .integration_records(run_id)
+        .map_err(safe_error)?
+    {
+        evidence.worktree_commits.push(format!(
+            "Slice {}: source commit {} (source base {}) integrated as {} (integration base {}), state {}",
+            record.slice_id,
+            record.source_commit,
+            record.source_base_commit,
+            record.destination_commit.as_deref().unwrap_or("not recorded"),
+            record.integration_base_commit,
+            record.state,
+        ));
+    }
+    state
+        .ledger
+        .store_pull_request_evidence(run_id, &evidence)
+        .map_err(safe_error)?;
+    create_pull_request_state(
+        &GitHubCli::new(),
+        &state.ledger,
+        &run,
+        &repository,
+        &expected_head,
+        &idempotency_key,
+    )
+    .map_err(safe_error)
+}
+
+#[tauri::command]
+fn try_merge_run_pull_request(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+    number: u64,
+) -> Result<MergeAttempt, String> {
+    let run_id = parse_run_id(&run_id).map_err(safe_error)?;
+    let run = state
+        .ledger
+        .list_runs()
+        .map_err(safe_error)?
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .ok_or_else(|| "Run was not found".to_owned())?;
+    let repository = state.repositories.get(run.repo_id).map_err(safe_error)?;
+    let policy = load_repository_policy(&repository.canonical_root).map_err(safe_error)?;
+    let integration = state
+        .worktrees
+        .integration_worktree(run_id)
+        .map_err(safe_error)?;
+    let expected_head = ExpectedPullRequestHead {
+        head_branch: integration.branch_name.clone(),
+        base_branch: repository.default_branch.clone(),
+        head_sha: inspect_integration_head(&integration).map_err(safe_error)?,
+    };
+    try_merge_pull_request(
+        &GitHubCli::new(),
+        &state.ledger,
+        &run,
+        &repository,
+        number,
+        &expected_head,
+        &policy,
+        &format!("merge-pr:{run_id}:{number}"),
+    )
+    .map_err(safe_error)
+}
+
+#[tauri::command]
+fn acknowledge_production_alert(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+    alert_id: String,
+) -> Result<(), String> {
+    let run_id = parse_run_id(&run_id).map_err(safe_error)?;
+    let alert_id = uuid::Uuid::parse_str(&alert_id).map_err(safe_error)?;
+    state
+        .ledger
+        .acknowledge_production_alert(run_id, alert_id)
+        .map_err(safe_error)
+}
+
+#[tauri::command]
+fn refresh_production_watch(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+) -> Result<ProductionRunState, String> {
+    let run_id = parse_run_id(&run_id).map_err(safe_error)?;
+    observe_production_for_run(&state.ledger, &state.repositories, &app, run_id).map_err(safe_error)
 }
 
 #[tauri::command]
@@ -292,6 +512,74 @@ fn safe_error(error: impl std::fmt::Display) -> String {
     RedactedOutput::new(error.to_string()).as_str().to_owned()
 }
 
+fn inspect_integration_head(worktree: &Worktree) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        worktree.state == factory_core::WorktreeState::Active,
+        "integration worktree is not active"
+    );
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&worktree.path)
+        .args(["status", "--porcelain"])
+        .output()
+        .context("starting Git to check the integration worktree")?;
+    anyhow::ensure!(
+        status.status.success(),
+        "could not inspect integration worktree"
+    );
+    anyhow::ensure!(
+        status.stdout.is_empty(),
+        "integration worktree has uncommitted changes"
+    );
+    let branch = Command::new("git")
+        .arg("-C")
+        .arg(&worktree.path)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .context("starting Git to verify the integration branch")?;
+    anyhow::ensure!(
+        branch.status.success(),
+        "could not resolve integration branch"
+    );
+    let branch = String::from_utf8_lossy(&branch.stdout).trim().to_owned();
+    anyhow::ensure!(
+        branch == worktree.branch_name,
+        "integration worktree is checked out to an unexpected branch"
+    );
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(&worktree.path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("starting Git to record the integration commit")?;
+    anyhow::ensure!(
+        head.status.success(),
+        "could not resolve integration commit"
+    );
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    anyhow::ensure!(
+        head.len() == 40 && head.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "integration worktree HEAD is not a full commit SHA"
+    );
+    Ok(head)
+}
+
+fn publish_integration_branch(worktree: &Worktree) -> anyhow::Result<String> {
+    let head = inspect_integration_head(worktree)?;
+    let push = Command::new("git")
+        .arg("-C")
+        .arg(&worktree.path)
+        .args(["push", "--set-upstream", "origin", &worktree.branch_name])
+        .output()
+        .context("starting Git to publish the integration branch")?;
+    anyhow::ensure!(
+        push.status.success(),
+        "could not publish the integration branch: {}",
+        safe_error(String::from_utf8_lossy(&push.stderr))
+    );
+    Ok(head)
+}
+
 fn parse_repo_id(value: &str) -> anyhow::Result<RepoId> {
     Ok(RepoId(uuid::Uuid::parse_str(value)?))
 }
@@ -346,6 +634,17 @@ fn build_factory_snapshot(state: &AppState) -> anyhow::Result<FactoryHomeSnapsho
         let messages = state.mailbox.list_messages(run.id)?;
         let blockers = state.scheduler.list_blockers(run.id)?;
         let integration_ready = state.scheduler.integration_ready(run.id)?;
+        let pull_request = state.ledger.latest_pull_request(run.id)?;
+        let pr_gate = pull_request
+            .as_ref()
+            .map(pull_request_gate_label)
+            .unwrap_or_else(|| "not observed".to_owned());
+        let production = state.ledger.latest_production_state(run.id)?;
+        let production_gate = production
+            .as_ref()
+            .and_then(|state| state.observation.as_ref())
+            .map(production_gate_label)
+            .unwrap_or_else(|| "awaiting production watch".to_owned());
         let has_running = assignments
             .iter()
             .any(|assignment| assignment.status == SliceStatus::Running);
@@ -393,8 +692,10 @@ fn build_factory_snapshot(state: &AppState) -> anyhow::Result<FactoryHomeSnapsho
             status: status.to_owned(),
             integration_ready,
             integration_gate: integration_gate.to_owned(),
-            pr_gate: "awaiting PR tracking".to_owned(),
-            production_gate: "awaiting production watch".to_owned(),
+            pr_gate,
+            pull_request,
+            production_gate,
+            production,
             worktrees,
             agents,
             messages,
@@ -418,6 +719,46 @@ fn build_factory_snapshot(state: &AppState) -> anyhow::Result<FactoryHomeSnapsho
     })
 }
 
+fn pull_request_gate_label(pull_request: &PullRequestRecord) -> String {
+    if pull_request.state.status == PullRequestStatus::Merged {
+        return "merged".to_owned();
+    }
+    match pull_request.gate.as_ref() {
+        Some(factory_core::MergeDecision::AutoMerge) => "ready to merge".to_owned(),
+        Some(factory_core::MergeDecision::WaitForReview { reason })
+        | Some(factory_core::MergeDecision::Block { reason }) => reason.clone(),
+        None => match pull_request.state.status {
+            PullRequestStatus::Merged => "merged".to_owned(),
+            PullRequestStatus::Closed => "closed".to_owned(),
+            PullRequestStatus::Open => {
+                let required = pull_request.state.checks.len();
+                let passed = pull_request
+                    .state
+                    .checks
+                    .iter()
+                    .filter(|check| check.state == factory_core::CheckState::Passed)
+                    .count();
+                format!("open · {passed}/{required} required checks passed")
+            }
+        },
+    }
+}
+
+fn production_gate_label(observation: &factory_core::ProductionObservation) -> String {
+    let environment = observation
+        .environment_id
+        .as_deref()
+        .unwrap_or("production");
+    match &observation.status {
+        ProductionStatus::Healthy => format!("{environment} healthy"),
+        ProductionStatus::WaitingForDeployment => {
+            format!("{environment} waiting for matching deployment")
+        }
+        ProductionStatus::Failed => format!("{environment} smoke check failed"),
+        ProductionStatus::Unverified => "unverified".to_owned(),
+    }
+}
+
 fn recovered_history_text(history: &[ManagerChatMessage]) -> String {
     let recent = history.iter().rev().take(8).collect::<Vec<_>>();
     let mut text = String::new();
@@ -430,6 +771,135 @@ fn recovered_history_text(history: &[ManagerChatMessage]) -> String {
         text.push_str(&format!("{role}: {content}\n"));
     }
     text
+}
+
+fn poll_production_once(
+    ledger: &Ledger,
+    repositories: &RepositoryRegistry,
+    app_handle: &tauri::AppHandle,
+) -> anyhow::Result<()> {
+    for run in ledger.list_runs()? {
+        let Some(pull_request) = ledger.latest_pull_request(run.id)? else {
+            continue;
+        };
+        if pull_request.state.status != PullRequestStatus::Merged {
+            continue;
+        }
+        let expected_sha = pull_request.state.merged_sha.as_deref();
+        if ledger
+            .latest_production_state(run.id)?
+            .and_then(|state| state.observation)
+            .is_some_and(|observation| observation.expected_sha.as_deref() == expected_sha)
+        {
+            continue;
+        }
+        observe_production_for_run(ledger, repositories, app_handle, run.id)?;
+    }
+    Ok(())
+}
+
+fn observe_production_for_run(
+    ledger: &Ledger,
+    repositories: &RepositoryRegistry,
+    app_handle: &tauri::AppHandle,
+    run_id: RunId,
+) -> anyhow::Result<ProductionRunState> {
+    let run = ledger
+        .list_runs()?
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .ok_or_else(|| anyhow::anyhow!("run was not found"))?;
+    let pull_request = ledger
+        .latest_pull_request(run_id)?
+        .ok_or_else(|| anyhow::anyhow!("no pull request has been observed for this run"))?;
+    anyhow::ensure!(
+        pull_request.state.status == PullRequestStatus::Merged,
+        "production watch starts after the pull request is merged"
+    );
+    let expected_sha = pull_request.state.merged_sha.as_deref();
+    let repository = repositories.get(run.repo_id)?;
+    let observation = match load_production_policy(&repository.canonical_root) {
+        Ok(policy) => ProductionObserver::new().observe(run.id, expected_sha, &policy),
+        Err(error) => evaluate_production(ProductionInput {
+            run_id: run.id,
+            expected_sha: expected_sha.map(str::to_owned),
+            deployed_sha: None,
+            smoke: SmokeCheckState::Missing,
+            environment_id: None,
+            detail: format!("Production policy is invalid: {}", safe_error(error)),
+        }),
+    };
+    let update = ledger.record_production_observation(&observation)?;
+    if update.new_alert {
+        if let Some(alert) = update.state.alert.as_ref() {
+            notify_production_alert(app_handle, alert);
+        }
+    }
+    Ok(update.state)
+}
+
+fn record_production_monitor_restart_gaps(
+    ledger: &Ledger,
+    repositories: &RepositoryRegistry,
+) -> anyhow::Result<Vec<factory_core::ProductionAlert>> {
+    let started_at_ms = ledger.production_monitor_started_at()?;
+    let stopped_at_ms = ledger.production_monitor_stopped_at()?;
+    if started_at_ms.is_none() && stopped_at_ms.is_none() {
+        ledger.start_production_monitor_session(now_ms())?;
+        return Ok(Vec::new());
+    }
+    let gap_detail = match (started_at_ms, stopped_at_ms) {
+        (Some(started), _) => format!(
+            "The previous app process ended without a clean production-monitor shutdown after starting at Unix time {started}; run a fresh production check before relying on the previous status."
+        ),
+        (_, Some(stopped)) => format!(
+            "Production monitoring stopped with the app at Unix time {stopped}; run a fresh production check before relying on the previous status."
+        ),
+        (None, None) => unreachable!("the no-gap case returned above"),
+    };
+    let mut new_alerts = Vec::new();
+    for run in ledger.list_runs()? {
+        let Some(pull_request) = ledger.latest_pull_request(run.id)? else {
+            continue;
+        };
+        if pull_request.state.status != PullRequestStatus::Merged {
+            continue;
+        }
+        let environment_id = repositories
+            .get(run.repo_id)
+            .ok()
+            .and_then(|repository| load_production_policy(&repository.canonical_root).ok())
+            .and_then(|policy| policy.environment_id);
+        let observation = evaluate_production(ProductionInput {
+            run_id: run.id,
+            expected_sha: pull_request.state.merged_sha,
+            deployed_sha: None,
+            smoke: SmokeCheckState::Missing,
+            environment_id,
+            detail: gap_detail.clone(),
+        });
+        let update = ledger.record_production_observation(&observation)?;
+        if update.new_alert {
+            if let Some(alert) = update.state.alert {
+                new_alerts.push(alert);
+            }
+        }
+    }
+    ledger.start_production_monitor_session(now_ms())?;
+    Ok(new_alerts)
+}
+
+fn notify_production_alert(app_handle: &tauri::AppHandle, alert: &factory_core::ProductionAlert) {
+    let body = alert.message.chars().take(220).collect::<String>();
+    if let Err(error) = app_handle
+        .notification()
+        .builder()
+        .title("Production needs attention")
+        .body(body)
+        .show()
+    {
+        eprintln!("production notification: {}", safe_error(error));
+    }
 }
 
 fn prepare_manager_workspace(app_data_dir: &Path) -> anyhow::Result<PathBuf> {
@@ -476,6 +946,9 @@ fn initialize_app_state(app: &mut tauri::App) -> anyhow::Result<AppState> {
     let mailbox = Mailbox::new((*ledger).clone(), worktrees.clone());
     worktrees.reconcile()?;
     mailbox.reconcile_interrupted_assignments()?;
+    for alert in record_production_monitor_restart_gaps(&ledger, &repositories)? {
+        notify_production_alert(app.handle(), &alert);
+    }
     let mcp_binary = std::env::current_exe()?;
     let worker_launcher = CodexWorkerLauncher::new(
         Arc::clone(&ledger),
@@ -552,6 +1025,31 @@ fn initialize_app_state(app: &mut tauri::App) -> anyhow::Result<AppState> {
             }
         })?;
 
+    let production_monitor_stop = Arc::new(AtomicBool::new(false));
+    let stop_production_monitor = Arc::clone(&production_monitor_stop);
+    let production_ledger = (*ledger).clone();
+    let production_repositories = repositories.clone();
+    let production_app = app.handle().clone();
+    let production_monitor = thread::Builder::new()
+        .name("factory-production-watch".to_owned())
+        .spawn(move || {
+            while !stop_production_monitor.load(Ordering::SeqCst) {
+                if let Err(error) = poll_production_once(
+                    &production_ledger,
+                    &production_repositories,
+                    &production_app,
+                ) {
+                    eprintln!("production watch: {}", safe_error(error));
+                }
+                for _ in 0..120 {
+                    if stop_production_monitor.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(500));
+                }
+            }
+        })?;
+
     Ok(AppState {
         ledger,
         ledger_path,
@@ -567,12 +1065,15 @@ fn initialize_app_state(app: &mut tauri::App) -> anyhow::Result<AppState> {
         scheduler,
         scheduler_monitor_stop,
         scheduler_monitor: Mutex::new(Some(scheduler_monitor)),
+        production_monitor_stop,
+        production_monitor: Mutex::new(Some(production_monitor)),
     })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let state = initialize_app_state(app)?;
             app.manage(state);
@@ -621,6 +1122,11 @@ pub fn run() {
             register_repository,
             create_run,
             link_runs,
+            observe_pull_request,
+            create_run_pull_request,
+            try_merge_run_pull_request,
+            acknowledge_production_alert,
+            refresh_production_watch,
             send_manager_message,
         ])
         .build(tauri::generate_context!())

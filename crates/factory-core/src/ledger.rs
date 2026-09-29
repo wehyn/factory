@@ -2,6 +2,14 @@ use crate::model::{
     Event, EventKind, FactorySnapshot, ManagerChatMessage, ManagerChatRole, RedactedOutput, RepoId,
     RunId, RunLink, RunRecord, SequencedEvent, SessionId, SessionProcessState, SessionSnapshot,
 };
+use crate::{
+    github::{GitHubActionRecord, PullRequestRecord},
+    policy::PullRequestEvidence,
+    production::{
+        ProductionAlert, ProductionAlertUpdate, ProductionObservation, ProductionRunState,
+        ProductionStatus,
+    },
+};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -69,6 +77,52 @@ impl Ledger {
                 created_at_ms INTEGER NOT NULL,
                 PRIMARY KEY(run_id, linked_run_id),
                 CHECK(run_id < linked_run_id)
+            );
+            CREATE TABLE IF NOT EXISTS pull_requests (
+                run_id TEXT NOT NULL REFERENCES factory_runs(id),
+                repo_id TEXT NOT NULL REFERENCES repositories(id),
+                number INTEGER NOT NULL,
+                record_json TEXT NOT NULL,
+                observed_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(run_id, number)
+            );
+            CREATE INDEX IF NOT EXISTS pull_requests_by_repo
+                ON pull_requests(repo_id, number);
+            CREATE TABLE IF NOT EXISTS pull_request_evidence (
+                run_id TEXT PRIMARY KEY REFERENCES factory_runs(id),
+                record_json TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS github_actions (
+                idempotency_key TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES factory_runs(id),
+                action_kind TEXT NOT NULL,
+                state TEXT NOT NULL,
+                result_json TEXT,
+                created_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS production_observations (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES factory_runs(id),
+                record_json TEXT NOT NULL,
+                observed_at_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS production_observations_by_run
+                ON production_observations(run_id, observed_at_ms DESC);
+            CREATE TABLE IF NOT EXISTS production_alerts (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES factory_runs(id),
+                record_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                acknowledged_at_ms INTEGER,
+                resolved_at_ms INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS production_alerts_by_run
+                ON production_alerts(run_id, created_at_ms DESC);
+            CREATE TABLE IF NOT EXISTS production_monitor_runtime (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                started_at_ms INTEGER,
+                stopped_at_ms INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS worktrees (
                 id TEXT PRIMARY KEY,
@@ -233,6 +287,12 @@ impl Ledger {
             "source_base_commit",
             "TEXT NOT NULL DEFAULT ''",
         )?;
+        ensure_column(
+            &connection,
+            "production_monitor_runtime",
+            "started_at_ms",
+            "INTEGER",
+        )?;
 
         let ledger = Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -387,6 +447,402 @@ impl Ledger {
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .context("reading linked runs")
+        })
+    }
+
+    /// Reserves a GitHub action key before an externally visible operation. A false result
+    /// means that key was already used and the caller must inspect its stored state.
+    pub fn begin_github_action(
+        &self,
+        idempotency_key: &str,
+        run_id: RunId,
+        action_kind: &str,
+    ) -> Result<bool> {
+        validate_github_action_key(idempotency_key)?;
+        if !matches!(action_kind, "create_pull_request" | "merge_pull_request") {
+            return Err(anyhow!("unsupported GitHub action kind"));
+        }
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let existing = transaction
+                .query_row(
+                    "SELECT run_id, action_kind FROM github_actions WHERE idempotency_key = ?1",
+                    [idempotency_key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            if let Some((stored_run, stored_kind)) = existing {
+                if stored_run != run_id.to_string() || stored_kind != action_kind {
+                    return Err(anyhow!(
+                        "GitHub idempotency key was reused for a different action"
+                    ));
+                }
+                transaction.commit()?;
+                return Ok(false);
+            }
+            transaction.execute(
+                "INSERT INTO github_actions
+                    (idempotency_key, run_id, action_kind, state, created_at_ms)
+                 VALUES (?1, ?2, ?3, 'started', ?4)",
+                params![idempotency_key, run_id.to_string(), action_kind, now_ms()],
+            )?;
+            transaction.commit()?;
+            Ok(true)
+        })
+    }
+
+    pub fn complete_github_action(&self, idempotency_key: &str, result_json: &str) -> Result<()> {
+        validate_github_action_key(idempotency_key)?;
+        serde_json::from_str::<serde_json::Value>(result_json)
+            .context("GitHub action result is not valid JSON")?;
+        self.with_connection(|connection| {
+            let transaction = connection.transaction()?;
+            let existing = transaction
+                .query_row(
+                    "SELECT state, result_json FROM github_actions WHERE idempotency_key = ?1",
+                    [idempotency_key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("GitHub action key was not reserved"))?;
+            if existing.0 == "completed" {
+                if existing.1.as_deref() != Some(result_json) {
+                    return Err(anyhow!("completed GitHub action result cannot be changed"));
+                }
+                transaction.commit()?;
+                return Ok(());
+            }
+            transaction.execute(
+                "UPDATE github_actions SET state = 'completed', result_json = ?2
+                 WHERE idempotency_key = ?1",
+                params![idempotency_key, result_json],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn github_action(&self, idempotency_key: &str) -> Result<Option<GitHubActionRecord>> {
+        validate_github_action_key(idempotency_key)?;
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT idempotency_key, run_id, action_kind, state, result_json, created_at_ms
+                     FROM github_actions WHERE idempotency_key = ?1",
+                    [idempotency_key],
+                    github_action_from_row,
+                )
+                .optional()
+                .context("reading GitHub action idempotency record")
+        })
+    }
+
+    pub fn store_pull_request(&self, record: &PullRequestRecord) -> Result<()> {
+        let record_json = serde_json::to_string(record)?;
+        self.with_connection(|connection| {
+            let transaction = connection.transaction()?;
+            let stored_repo = transaction
+                .query_row(
+                    "SELECT repo_id FROM factory_runs WHERE id = ?1",
+                    [record.run_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("pull request run is not registered"))?;
+            if stored_repo != record.repo_id.to_string() {
+                return Err(anyhow!("pull request repository does not match its run"));
+            }
+            transaction.execute(
+                "INSERT INTO pull_requests(run_id, repo_id, number, record_json, observed_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(run_id, number) DO UPDATE SET
+                    repo_id = excluded.repo_id,
+                    record_json = excluded.record_json,
+                    observed_at_ms = excluded.observed_at_ms",
+                params![
+                    record.run_id.to_string(),
+                    record.repo_id.to_string(),
+                    record.state.number as i64,
+                    record_json,
+                    record.state.observed_at_ms,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn list_pull_requests(&self, run_id: RunId) -> Result<Vec<PullRequestRecord>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT record_json FROM pull_requests WHERE run_id = ?1
+                 ORDER BY observed_at_ms DESC, number DESC",
+            )?;
+            let rows = statement.query_map([run_id.to_string()], |row| row.get::<_, String>(0))?;
+            rows.map(|row| {
+                let json = row?;
+                serde_json::from_str(&json).context("decoding durable GitHub pull request state")
+            })
+            .collect()
+        })
+    }
+
+    pub fn latest_pull_request(&self, run_id: RunId) -> Result<Option<PullRequestRecord>> {
+        Ok(self.list_pull_requests(run_id)?.into_iter().next())
+    }
+
+    pub fn store_pull_request_evidence(
+        &self,
+        run_id: RunId,
+        evidence: &PullRequestEvidence,
+    ) -> Result<()> {
+        let record_json = serde_json::to_string(evidence)?;
+        self.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO pull_request_evidence(run_id, record_json, updated_at_ms)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                    record_json = excluded.record_json,
+                    updated_at_ms = excluded.updated_at_ms",
+                params![run_id.to_string(), record_json, now_ms()],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn pull_request_evidence(&self, run_id: RunId) -> Result<Option<PullRequestEvidence>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT record_json FROM pull_request_evidence WHERE run_id = ?1",
+                    [run_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|json| serde_json::from_str(&json).context("decoding pull request evidence"))
+                .transpose()
+        })
+    }
+
+    pub fn record_production_observation(
+        &self,
+        observation: &ProductionObservation,
+    ) -> Result<ProductionAlertUpdate> {
+        let observation_json = serde_json::to_string(observation)?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "INSERT INTO production_observations(id, run_id, record_json, observed_at_ms)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    observation.id.to_string(),
+                    observation.run_id.to_string(),
+                    observation_json,
+                    observation.observed_at_ms,
+                ],
+            )?;
+
+            let active = transaction
+                .query_row(
+                    "SELECT id, record_json FROM production_alerts
+                     WHERE run_id = ?1 AND resolved_at_ms IS NULL
+                     ORDER BY created_at_ms DESC LIMIT 1",
+                    [observation.run_id.to_string()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?
+                .map(|(id, json)| {
+                    serde_json::from_str::<ProductionAlert>(&json)
+                        .map(|alert| (id, alert))
+                        .context("decoding the active production alert")
+                })
+                .transpose()?;
+
+            let mut new_alert = false;
+            if observation.status == ProductionStatus::Healthy {
+                if let Some((id, mut alert)) = active {
+                    alert.resolved_at_ms = Some(observation.observed_at_ms);
+                    transaction.execute(
+                        "UPDATE production_alerts SET record_json = ?2, resolved_at_ms = ?3
+                         WHERE id = ?1",
+                        params![
+                            id,
+                            serde_json::to_string(&alert)?,
+                            observation.observed_at_ms
+                        ],
+                    )?;
+                }
+            } else {
+                let same_active = active.as_ref().is_some_and(|(_, alert)| {
+                    alert.status == observation.status
+                        && alert.expected_sha == observation.expected_sha
+                });
+                if same_active {
+                    let (id, mut alert) = active.expect("active alert checked above");
+                    alert.message = observation.detail.clone();
+                    transaction.execute(
+                        "UPDATE production_alerts SET record_json = ?2 WHERE id = ?1",
+                        params![id, serde_json::to_string(&alert)?],
+                    )?;
+                } else {
+                    if let Some((id, mut alert)) = active {
+                        alert.resolved_at_ms = Some(observation.observed_at_ms);
+                        transaction.execute(
+                            "UPDATE production_alerts SET record_json = ?2, resolved_at_ms = ?3
+                             WHERE id = ?1",
+                            params![
+                                id,
+                                serde_json::to_string(&alert)?,
+                                observation.observed_at_ms
+                            ],
+                        )?;
+                    }
+                    let alert = ProductionAlert {
+                        id: Uuid::new_v4(),
+                        run_id: observation.run_id,
+                        status: observation.status.clone(),
+                        message: observation.detail.clone(),
+                        expected_sha: observation.expected_sha.clone(),
+                        created_at_ms: observation.observed_at_ms,
+                        acknowledged_at_ms: None,
+                        resolved_at_ms: None,
+                    };
+                    transaction.execute(
+                        "INSERT INTO production_alerts
+                            (id, run_id, record_json, created_at_ms)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            alert.id.to_string(),
+                            alert.run_id.to_string(),
+                            serde_json::to_string(&alert)?,
+                            alert.created_at_ms,
+                        ],
+                    )?;
+                    new_alert = true;
+                }
+            }
+            transaction.commit()?;
+            let state = latest_production_state_in_connection(connection, observation.run_id)?;
+            Ok(ProductionAlertUpdate { state, new_alert })
+        })
+    }
+
+    pub fn latest_production_state(&self, run_id: RunId) -> Result<Option<ProductionRunState>> {
+        self.with_connection(|connection| {
+            let observation = connection
+                .query_row(
+                    "SELECT record_json FROM production_observations WHERE run_id = ?1
+                     ORDER BY observed_at_ms DESC LIMIT 1",
+                    [run_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|json| serde_json::from_str(&json).context("decoding production observation"))
+                .transpose()?;
+            let alert = connection
+                .query_row(
+                    "SELECT record_json FROM production_alerts WHERE run_id = ?1
+                     ORDER BY created_at_ms DESC LIMIT 1",
+                    [run_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|json| serde_json::from_str(&json).context("decoding production alert"))
+                .transpose()?;
+            if observation.is_none() && alert.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(ProductionRunState { observation, alert }))
+        })
+    }
+
+    pub fn acknowledge_production_alert(&self, run_id: RunId, alert_id: Uuid) -> Result<()> {
+        self.with_connection(|connection| {
+            let transaction = connection.transaction()?;
+            let json = transaction
+                .query_row(
+                    "SELECT record_json FROM production_alerts
+                     WHERE id = ?1 AND run_id = ?2",
+                    params![alert_id.to_string(), run_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("production alert was not found"))?;
+            let mut alert: ProductionAlert =
+                serde_json::from_str(&json).context("decoding production alert")?;
+            if alert.acknowledged_at_ms.is_none() {
+                alert.acknowledged_at_ms = Some(now_ms());
+                transaction.execute(
+                    "UPDATE production_alerts SET record_json = ?2, acknowledged_at_ms = ?3
+                     WHERE id = ?1",
+                    params![
+                        alert_id.to_string(),
+                        serde_json::to_string(&alert)?,
+                        alert.acknowledged_at_ms,
+                    ],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn mark_production_monitor_stopped(&self, stopped_at_ms: i64) -> Result<()> {
+        self.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO production_monitor_runtime(id, started_at_ms, stopped_at_ms)
+                 VALUES (1, NULL, ?1)
+                 ON CONFLICT(id) DO UPDATE SET
+                    started_at_ms = NULL,
+                    stopped_at_ms = excluded.stopped_at_ms",
+                [stopped_at_ms],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn start_production_monitor_session(&self, started_at_ms: i64) -> Result<()> {
+        self.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO production_monitor_runtime(id, started_at_ms, stopped_at_ms)
+                 VALUES (1, ?1, 0)
+                 ON CONFLICT(id) DO UPDATE SET
+                    started_at_ms = excluded.started_at_ms,
+                    stopped_at_ms = 0",
+                [started_at_ms],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn production_monitor_started_at(&self) -> Result<Option<i64>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT started_at_ms FROM production_monitor_runtime WHERE id = 1",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map(Option::flatten)
+                .context("reading production monitor start state")
+        })
+    }
+
+    pub fn production_monitor_stopped_at(&self) -> Result<Option<i64>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT CASE WHEN started_at_ms IS NULL THEN stopped_at_ms ELSE NULL END
+                     FROM production_monitor_runtime WHERE id = 1",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map(Option::flatten)
+                .context("reading production monitor shutdown state")
         })
     }
 
@@ -789,6 +1245,81 @@ fn manager_chat_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagerCha
         role,
         content: row.get(4)?,
         created_at_ms: row.get(5)?,
+    })
+}
+
+fn github_action_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GitHubActionRecord> {
+    let idempotency_key = row.get::<_, String>(0)?;
+    let run_id = row.get::<_, String>(1)?;
+    let action_kind = row.get::<_, String>(2)?;
+    let state = row.get::<_, String>(3)?;
+    let result_json = row.get::<_, Option<String>>(4)?;
+    let created_at_ms = row.get::<_, i64>(5)?;
+    let uuid_error = |column, error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    };
+    let completed = match state.as_str() {
+        "started" => false,
+        "completed" => true,
+        _ => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                3,
+                "state".to_owned(),
+                rusqlite::types::Type::Text,
+            ))
+        }
+    };
+    Ok(GitHubActionRecord {
+        idempotency_key,
+        run_id: RunId(Uuid::parse_str(&run_id).map_err(|error| uuid_error(1, error))?),
+        action_kind,
+        completed,
+        result_json,
+        created_at_ms,
+    })
+}
+
+fn validate_github_action_key(key: &str) -> Result<()> {
+    anyhow::ensure!(
+        !key.is_empty()
+            && key.len() <= 160
+            && key.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+            }),
+        "GitHub action idempotency key must be 1 to 160 ASCII letters, digits, or -_.: characters"
+    );
+    Ok(())
+}
+
+fn latest_production_state_in_connection(
+    connection: &Connection,
+    run_id: RunId,
+) -> Result<ProductionRunState> {
+    let observation_json = connection.query_row(
+        "SELECT record_json FROM production_observations WHERE run_id = ?1
+         ORDER BY observed_at_ms DESC LIMIT 1",
+        [run_id.to_string()],
+        |row| row.get::<_, String>(0),
+    )?;
+    let alert_json = connection
+        .query_row(
+            "SELECT record_json FROM production_alerts WHERE run_id = ?1
+             ORDER BY created_at_ms DESC LIMIT 1",
+            [run_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(ProductionRunState {
+        observation: Some(
+            serde_json::from_str(&observation_json).context("decoding production observation")?,
+        ),
+        alert: alert_json
+            .map(|json| serde_json::from_str(&json).context("decoding production alert"))
+            .transpose()?,
     })
 }
 

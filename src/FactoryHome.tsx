@@ -1,10 +1,16 @@
 import { useMemo, useState, type FormEvent } from "react";
 import {
+  createRunPullRequest,
   createRun as createNamedRun,
   linkRuns,
+  acknowledgeProductionAlert,
+  observePullRequest,
+  refreshProductionWatch,
+  tryMergeRunPullRequest,
   registerRepository as registerRepositoryAtPath,
   type AgentMessage,
   type FactoryHomeSnapshot,
+  type PullRequestEvidence,
   type RunHomeView,
 } from "./bridge";
 
@@ -32,6 +38,12 @@ function FactoryHome({ snapshot, selectedRunId, selectedMessage, error, onSelect
   const [selectedRepoId, setSelectedRepoId] = useState(snapshot.repositories[0]?.id ?? "");
   const [runTitle, setRunTitle] = useState("");
   const [linkTargetId, setLinkTargetId] = useState("");
+  const [pullRequestNumber, setPullRequestNumber] = useState("");
+  const [changeSummary, setChangeSummary] = useState("");
+  const [verificationEvidence, setVerificationEvidence] = useState("");
+  const [reviewEvidence, setReviewEvidence] = useState("");
+  const [decisionEvidence, setDecisionEvidence] = useState("");
+  const [limitationEvidence, setLimitationEvidence] = useState("");
   const [busy, setBusy] = useState("");
   const [formError, setFormError] = useState("");
   const selectedRun = snapshot.runs.find(({ run }) => run.id === selectedRunId);
@@ -82,6 +94,98 @@ function FactoryHome({ snapshot, selectedRunId, selectedMessage, error, onSelect
     try {
       await linkRuns(selectedRunId, linkTargetId);
       setLinkTargetId("");
+      await onRefresh();
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function refreshPullRequest() {
+    if (!selectedRunId || !pullRequestNumber || busy) return;
+    const number = Number(pullRequestNumber);
+    if (!Number.isSafeInteger(number) || number < 1) {
+      setFormError("Enter a valid pull request number");
+      return;
+    }
+    setBusy("pr");
+    setFormError("");
+    try {
+      await observePullRequest(selectedRunId, number);
+      await onRefresh();
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function createPullRequest() {
+    if (!selectedRunId || busy) return;
+    if (!changeSummary.trim() || !verificationEvidence.trim()) {
+      setFormError("Add a change summary and verification evidence before publishing the branch");
+      return;
+    }
+    setBusy("create-pr");
+    setFormError("");
+    try {
+      const lines = (value: string) => value.split("\n").map((line) => line.trim()).filter(Boolean);
+      const evidence: PullRequestEvidence = {
+        change_summary: changeSummary.trim(),
+        verification: lines(verificationEvidence),
+        independent_review: lines(reviewEvidence),
+        decisions: lines(decisionEvidence),
+        limitations: lines(limitationEvidence),
+      };
+      const created = await createRunPullRequest(selectedRunId, evidence);
+      setPullRequestNumber(String(created.number));
+      await onRefresh();
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function attemptMerge() {
+    const pullRequest = selectedRun?.pull_request;
+    if (!selectedRunId || !pullRequest || busy) return;
+    setBusy("merge-pr");
+    setFormError("");
+    try {
+      const result = await tryMergeRunPullRequest(selectedRunId, pullRequest.number);
+      if (!result.merged && result.decision.kind !== "auto_merge") {
+        setFormError(result.decision.reason);
+      }
+      await onRefresh();
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function runProductionCheck() {
+    if (!selectedRunId || busy || selectedRun?.pull_request?.status !== "merged") return;
+    setBusy("production");
+    setFormError("");
+    try {
+      await refreshProductionWatch(selectedRunId);
+      await onRefresh();
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function acknowledgeAlert(alertId: string) {
+    if (!selectedRunId || busy) return;
+    setBusy("acknowledge");
+    setFormError("");
+    try {
+      await acknowledgeProductionAlert(selectedRunId, alertId);
       await onRefresh();
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : String(reason));
@@ -153,6 +257,49 @@ function FactoryHome({ snapshot, selectedRunId, selectedMessage, error, onSelect
               <Gate label="Pull request" value={selectedRun.pr_gate} />
               <Gate label="Production" value={selectedRun.production_gate} />
             </div>
+            <div className="pr-refresh">
+              <label htmlFor="pull-request-number">Track a pull request</label>
+              <div className="input-action-row">
+                <input id="pull-request-number" type="number" min="1" step="1" value={pullRequestNumber} onChange={(event) => setPullRequestNumber(event.target.value)} placeholder="PR number" />
+                <button type="button" onClick={refreshPullRequest} disabled={!pullRequestNumber || busy === "pr"} aria-label="Refresh pull request">{busy === "pr" ? "…" : "↻"}</button>
+              </div>
+              {selectedRun.pull_request && <a className="pr-link" href={selectedRun.pull_request.url} target="_blank" rel="noreferrer">
+                PR #{selectedRun.pull_request.number} · {selectedRun.pull_request.status}
+              </a>}
+            </div>
+            {!selectedRun.pull_request && selectedRun.integration_ready && <details className="pr-evidence-form" open>
+              <summary>Prepare pull request</summary>
+              <label htmlFor="pr-change-summary">Change summary</label>
+              <textarea id="pr-change-summary" value={changeSummary} onChange={(event) => setChangeSummary(event.target.value)} rows={2} maxLength={4000} placeholder="What changed and why?" />
+              <label htmlFor="pr-verification">Verification evidence</label>
+              <textarea id="pr-verification" value={verificationEvidence} onChange={(event) => setVerificationEvidence(event.target.value)} rows={3} maxLength={4000} placeholder="One command or result per line" />
+              <label htmlFor="pr-review">Independent review</label>
+              <textarea id="pr-review" value={reviewEvidence} onChange={(event) => setReviewEvidence(event.target.value)} rows={2} maxLength={2000} placeholder="Optional; GitHub current-head approval is still required by policy" />
+              <label htmlFor="pr-decisions">Decisions</label>
+              <textarea id="pr-decisions" value={decisionEvidence} onChange={(event) => setDecisionEvidence(event.target.value)} rows={2} maxLength={2000} placeholder="One decision per line, if any" />
+              <label htmlFor="pr-limitations">Limitations</label>
+              <textarea id="pr-limitations" value={limitationEvidence} onChange={(event) => setLimitationEvidence(event.target.value)} rows={2} maxLength={2000} placeholder="One limitation per line, if any" />
+              <button className="primary-action" type="button" onClick={createPullRequest} disabled={!changeSummary.trim() || !verificationEvidence.trim() || busy === "create-pr"}>
+                {busy === "create-pr" ? "Publishing…" : "Publish branch and create PR"}
+              </button>
+            </details>}
+            {selectedRun.pull_request?.status === "open" && selectedRun.pull_request.gate?.kind === "auto_merge" && <button className="primary-action merge-action" type="button" onClick={attemptMerge} disabled={busy === "merge-pr"}>
+              {busy === "merge-pr" ? "Rechecking…" : "Merge with current checks"}
+            </button>}
+            {selectedRun.production && <div className="production-watch">
+              <p className="production-detail">{selectedRun.production.observation?.detail}</p>
+              {selectedRun.production.alert && <div className="production-alert" role="status">
+                <strong>{selectedRun.production.alert.status.replace(/_/g, " ")}</strong>
+                <p>{selectedRun.production.alert.message}</p>
+                {selectedRun.production.alert.resolved_at_ms && <small>Resolved</small>}
+                {!selectedRun.production.alert.acknowledged_at_ms && <button type="button" onClick={() => acknowledgeAlert(selectedRun.production!.alert!.id)} disabled={busy === "acknowledge"}>
+                  {busy === "acknowledge" ? "Saving…" : "Acknowledge"}
+                </button>}
+              </div>}
+            </div>}
+            {selectedRun.pull_request?.status === "merged" && <button className="quiet-button production-check" type="button" onClick={runProductionCheck} disabled={busy === "production"}>
+              {busy === "production" ? "Checking…" : "Run production check"}
+            </button>}
             {selectedRun.blockers.map((blocker) => <p className="blocker-note" key={blocker.id}>{blocker.detail}</p>)}
           </section>
           <section className="inspector-section" aria-labelledby="worktrees-title">
@@ -195,7 +342,7 @@ function FactoryHome({ snapshot, selectedRunId, selectedMessage, error, onSelect
 }
 
 function Gate({ label, value }: { label: string; value: string }) {
-  const state = value.toLowerCase().includes("passed") || value.toLowerCase().includes("healthy")
+  const state = value.toLowerCase().includes("passed") || value.toLowerCase().includes("healthy") || value.toLowerCase().includes("ready to merge") || value.toLowerCase().includes("merged")
     ? "passed"
     : value.toLowerCase().includes("blocked") || value.toLowerCase().includes("fail")
       ? "blocked"

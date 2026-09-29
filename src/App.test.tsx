@@ -159,7 +159,9 @@ function baseSnapshot(): FactoryHomeSnapshot {
         integration_ready: false,
         integration_gate: "pending",
         pr_gate: "awaiting PR tracking",
+        pull_request: null,
         production_gate: "awaiting production watch",
+        production: null,
         worktrees: [{ worktree, status: "clean" as const }],
         agents: [{ assignment, worktree: { worktree, status: "clean" as const }, session: {
           session_id: "agent-session",
@@ -181,7 +183,9 @@ function baseSnapshot(): FactoryHomeSnapshot {
         integration_ready: false,
         integration_gate: "not_started",
         pr_gate: "awaiting PR tracking",
+        pull_request: null,
         production_gate: "awaiting production watch",
+        production: null,
         worktrees: [],
         agents: [],
         messages: [],
@@ -286,6 +290,39 @@ describe("Agentic Factory workspace", () => {
       expect(tauriMocks.invoke).toHaveBeenCalledWith("create_run", {
         repoId: "repo-1",
         title: "Add search filters",
+      });
+    });
+  });
+
+  it("records PR summary and verification evidence before publishing the integration branch", async () => {
+    const ready = baseSnapshot();
+    ready.runs[0].integration_ready = true;
+    tauriMocks.invoke.mockImplementation((command: string) => {
+      if (command === "get_factory_snapshot") return Promise.resolve(ready);
+      if (command === "create_run_pull_request") return Promise.resolve({ number: 12 });
+      return Promise.resolve(undefined);
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /Build API/i });
+    fireEvent.change(screen.getByLabelText("Change summary"), {
+      target: { value: "Add reliable search filters" },
+    });
+    fireEvent.change(screen.getByLabelText("Verification evidence"), {
+      target: { value: "cargo test -p factory-core\nnpm run build" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Publish branch and create PR" }));
+
+    await waitFor(() => {
+      expect(tauriMocks.invoke).toHaveBeenCalledWith("create_run_pull_request", {
+        runId: "run-1",
+        evidence: {
+          change_summary: "Add reliable search filters",
+          verification: ["cargo test -p factory-core", "npm run build"],
+          independent_review: [],
+          decisions: [],
+          limitations: [],
+        },
       });
     });
   });

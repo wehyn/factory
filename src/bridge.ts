@@ -141,12 +141,73 @@ export type RunHomeView = {
   integration_ready: boolean;
   integration_gate: string;
   pr_gate: string;
+  pull_request: PullRequestRecord | null;
   production_gate: string;
+  production: ProductionRunState | null;
   worktrees: WorktreeHomeView[];
   agents: AgentCanvasView[];
   messages: AgentMessage[];
   blockers: SchedulerBlocker[];
   linked_run_ids: string[];
+};
+
+export type PullRequestRecord = {
+  run_id: string;
+  repo_id: string;
+  number: number;
+  url: string;
+  title: string;
+  status: "open" | "closed" | "merged";
+  is_draft: boolean;
+  head_branch: string;
+  base_branch: string;
+  head_sha: string;
+  base_sha: string;
+  author_login: string;
+  reviews: { author_login: string; state: string; head_sha: string; submitted_at_ms: number }[];
+  checks: { name: string; state: string; head_sha: string }[];
+  merged_sha: string | null;
+  observed_at_ms: number;
+  gate: { kind: "auto_merge" } | { kind: "wait_for_review" | "block"; reason: string } | null;
+};
+
+export type PullRequestEvidence = {
+  change_summary: string;
+  verification: string[];
+  independent_review: string[];
+  decisions: string[];
+  limitations: string[];
+};
+
+export type ProductionStatus = "healthy" | "waiting_for_deployment" | "failed" | "unverified";
+export type ProductionAlert = {
+  id: string;
+  run_id: string;
+  status: ProductionStatus;
+  message: string;
+  expected_sha: string | null;
+  created_at_ms: number;
+  acknowledged_at_ms: number | null;
+  resolved_at_ms: number | null;
+};
+export type ProductionRunState = {
+  observation: {
+    id: string;
+    run_id: string;
+    expected_sha: string | null;
+    deployed_sha: string | null;
+    smoke: "passed" | "failed" | "missing";
+    environment_id: string | null;
+    status: ProductionStatus;
+    detail: string;
+    observed_at_ms: number;
+  } | null;
+  alert: ProductionAlert | null;
+};
+export type MergeAttempt = {
+  decision: { kind: "auto_merge" } | { kind: "wait_for_review" | "block"; reason: string };
+  pull_request: PullRequestRecord;
+  merged: boolean;
 };
 
 export type FactoryHomeSnapshot = {
@@ -173,6 +234,26 @@ export async function createRun(repoId: string, title: string): Promise<RunRecor
 
 export async function linkRuns(runId: string, linkedRunId: string): Promise<void> {
   return invoke<void>("link_runs", { runId, linkedRunId });
+}
+
+export async function observePullRequest(runId: string, number: number): Promise<PullRequestRecord> {
+  return invoke<PullRequestRecord>("observe_pull_request", { runId, number });
+}
+
+export async function createRunPullRequest(runId: string, evidence: PullRequestEvidence): Promise<PullRequestRecord> {
+  return invoke<PullRequestRecord>("create_run_pull_request", { runId, evidence });
+}
+
+export async function tryMergeRunPullRequest(runId: string, number: number): Promise<MergeAttempt> {
+  return invoke<MergeAttempt>("try_merge_run_pull_request", { runId, number });
+}
+
+export async function acknowledgeProductionAlert(runId: string, alertId: string): Promise<void> {
+  return invoke<void>("acknowledge_production_alert", { runId, alertId });
+}
+
+export async function refreshProductionWatch(runId: string): Promise<ProductionRunState> {
+  return invoke<ProductionRunState>("refresh_production_watch", { runId });
 }
 
 export async function sendManagerMessage(content: string, runId: string | null): Promise<void> {
