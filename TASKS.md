@@ -86,7 +86,7 @@ The roadmap IDs below refer to `outputs/agentic-factory-implementation-plan.md`;
 - Status: COMPLETE
 - Acceptance: home shows repositories/runs/worktrees/gates; one manager chat persists across run selection; real read-only agent sessions render on a pannable canvas; directed message arrows expose provenance; sequence gaps restore the snapshot.
 - Verification evidence: `cargo test -p factory-core` passed (44 passed, five live tests ignored); `npm test -- --run` passed (three UI behavior tests); `npm run build`, `cargo check --workspace`, `cargo fmt --all -- --check`, and `git diff --check` passed. The real Tauri development binary compiled and launched against the existing local data; its older installed app has the same macOS bundle identity, so native viewport inspection is recorded for R10's isolated release acceptance.
-- Commit: pending
+- Commit: f569cc6 (`feat: show live agent sessions on canvas`)
 
 ### Roadmap Task 8: GitHub PR tracking and conservative merge gate (R8)
 
