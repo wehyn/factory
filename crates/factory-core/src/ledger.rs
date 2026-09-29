@@ -11,6 +11,7 @@ use std::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -26,6 +27,7 @@ impl Ledger {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)
             .with_context(|| format!("opening event ledger at {}", path.display()))?;
+        connection.busy_timeout(Duration::from_secs(60))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.execute_batch(
@@ -36,13 +38,64 @@ impl Ledger {
                 kind TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS repositories (
+                id TEXT PRIMARY KEY,
+                canonical_root TEXT NOT NULL UNIQUE,
+                remote_url TEXT,
+                default_branch TEXT NOT NULL,
+                registered_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS worktrees (
+                id TEXT PRIMARY KEY,
+                repo_id TEXT NOT NULL REFERENCES repositories(id),
+                run_id TEXT NOT NULL,
+                role_kind TEXT NOT NULL,
+                role_key TEXT NOT NULL,
+                agent_id TEXT,
+                base_sha TEXT NOT NULL,
+                branch_name TEXT NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                UNIQUE(run_id, role_key),
+                UNIQUE(repo_id, branch_name)
+            );
+            CREATE INDEX IF NOT EXISTS worktrees_by_run ON worktrees(run_id);
+            CREATE TABLE IF NOT EXISTS file_reservations (
+                run_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                PRIMARY KEY(run_id, agent_id, path)
+            );
+            CREATE INDEX IF NOT EXISTS file_reservations_by_run ON file_reservations(run_id);
+            CREATE TABLE IF NOT EXISTS recovery_issues (
+                id TEXT PRIMARY KEY,
+                worktree_id TEXT NOT NULL REFERENCES worktrees(id),
+                kind TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                recorded_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS recovery_issues_by_worktree
+                ON recovery_issues(worktree_id, resolved_at_ms);",
         )?;
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             subscribers: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    pub(crate) fn with_connection<T>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T>,
+    ) -> Result<T> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("event ledger connection lock was poisoned"))?;
+        operation(&mut connection)
     }
 
     pub fn subscribe(&self) -> Result<Receiver<SequencedEvent>> {

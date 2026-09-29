@@ -1,6 +1,7 @@
 use anyhow::Context;
 use factory_core::{
     CodexRunner, Event, EventKind, FactorySnapshot, Ledger, RedactedOutput, SessionId,
+    WorktreeManager,
 };
 use std::{
     path::{Path, PathBuf},
@@ -154,6 +155,8 @@ fn initialize_app_state(app: &mut tauri::App) -> anyhow::Result<AppState> {
     // No child process survives a service restart. Record that recovery before the webview
     // can request its first snapshot, so persisted start events are never exposed as live.
     ledger.recover_unfinished_sessions()?;
+    let worktrees = WorktreeManager::new((*ledger).clone(), app_data_dir.join("worktrees"))?;
+    worktrees.reconcile()?;
     let disposable_repo = prepare_disposable_repo(&app_data_dir)?;
 
     let event_receiver = ledger.subscribe()?;

@@ -6,6 +6,31 @@ use std::{
 };
 use uuid::Uuid;
 
+macro_rules! uuid_id {
+    ($name:ident) => {
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(pub Uuid);
+
+        impl $name {
+            pub fn new() -> Self {
+                Self(Uuid::new_v4())
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+    };
+}
+
+uuid_id!(RepoId);
+uuid_id!(RunId);
+uuid_id!(AgentId);
+uuid_id!(WorktreeId);
+
 const MAX_OUTPUT_CHARS: usize = 16_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -16,6 +41,85 @@ impl fmt::Display for SessionId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Repository {
+    pub id: RepoId,
+    pub canonical_root: std::path::PathBuf,
+    pub remote_url: Option<String>,
+    pub default_branch: String,
+    pub registered_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "agent_id", rename_all = "snake_case")]
+pub enum WorktreeRole {
+    Integration,
+    Agent(AgentId),
+}
+
+impl WorktreeRole {
+    pub fn key(&self) -> String {
+        match self {
+            Self::Integration => "integration".to_owned(),
+            Self::Agent(agent_id) => format!("agent:{agent_id}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeState {
+    Creating,
+    Active,
+    Archived,
+    RecoveryRequired,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Worktree {
+    pub id: WorktreeId,
+    pub repo_id: RepoId,
+    pub run_id: RunId,
+    pub role: WorktreeRole,
+    pub base_sha: String,
+    pub branch_name: String,
+    pub path: std::path::PathBuf,
+    pub state: WorktreeState,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeStatus {
+    Clean,
+    Dirty,
+    Busy,
+    Missing,
+    Unsafe,
+    Creating,
+    Archived,
+    RecoveryRequired,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveOutcome {
+    Archived,
+    RefusedDirty,
+    RefusedUnsafe,
+    Missing,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RecoveryIssue {
+    pub id: Uuid,
+    pub worktree_id: WorktreeId,
+    pub kind: String,
+    pub detail: String,
+    pub recorded_at_ms: i64,
+    pub resolved_at_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

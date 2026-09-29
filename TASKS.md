@@ -42,3 +42,72 @@ Owner: root agent
 - Acceptance: snapshot loads on reconnect, event gaps reload from the ledger, only disposable-repository turns can be started, and session output remains read-only and redacted.
 - Verification evidence: frontend tests passed snapshot restoration, output delivery, read-only UI, gap reload, and the 40-output live-state bound. `npm run build`, `cargo test --workspace`, `cargo fmt --all -- --check`, `git diff --check`, and `npm run tauri build` passed. The packaged app completed the harmless real Codex turn and displayed `hello`; closing hid the window without exiting PID 49185; tray Open restored the same PID and output; tray Quit exited the app and App Server. After relaunch, the final build restored the same five-event completed snapshot in PID 55617 without starting another Codex process.
 - Commit: 40b659be0cae3a0d78b6dc92832de133aba3aec3
+
+## Remaining v1 roadmap tasks
+
+The roadmap IDs below refer to `outputs/agentic-factory-implementation-plan.md`; they are distinct from the resident-slice task numbers above.
+
+### Roadmap Task 4: Repository registry and exclusive worktrees (R4)
+
+- Owner: root
+- Scope: `crates/factory-core/src/{model,ledger,repositories,worktrees,lib}.rs`, `crates/factory-core/tests/worktree_isolation.rs`, Tauri service wiring where required
+- Dependencies: resident ledger and App Server adapter (complete)
+- Status: COMPLETE
+- Acceptance: register canonical Git roots and record remote/default branch; create a run integration worktree and exclusive agent worktrees from exact base SHAs; detect overlapping file ownership; refuse unsafe or dirty archival without data loss; persist worktree metadata and recovery issues.
+- Verification evidence: `cargo test -p factory-core` passed (28 passed, one ignored); the worktree isolation suite passed five consecutive concurrent runs; `cargo check -p agentic-factory`, `cargo fmt --all -- --check`, and `git diff --check` passed. Coverage verifies Git's real worktree list, exact base SHA, isolated agent edits, credential scrubbing, reservation conflicts across SQLite connections, archive refusal/preservation, symlink and missing-path recovery, and startup reconciliation around a live creator.
+- Branch: `feat/repository-worktrees`
+- Commit: 938cbb0
+
+### Roadmap Task 5: Manager delegation, mailbox, and agent tools (R5)
+
+- Owner: root
+- Scope: `crates/factory-core/src/{mailbox,mcp}.rs`, Codex tool configuration, `crates/factory-core/tests/message_delivery.rs`, `docs/agent-contracts.md`
+- Dependencies: R4 identity, worktree, and ownership contracts
+- Status: NOT STARTED
+- Acceptance: manager-only assignment validates run, dependencies, file scope, and worktree; directed messages persist and deliver once; contract decisions are versioned and conflicts stop dependent work; a harmless App Server turn invokes scoped factory MCP tools without mutating global Codex configuration.
+- Verification evidence: pending
+
+### Roadmap Task 6: Dependency scheduler and integration gate (R6)
+
+- Owner: root
+- Scope: `crates/factory-core/src/scheduler.rs`, `crates/factory-core/tests/scheduler_recovery.rs`
+- Dependencies: R4 and R5
+- Status: NOT STARTED
+- Acceptance: independent slices schedule concurrently, dependent slices wait for every dependency, restart cannot duplicate a slice, retries are bounded, and manager integration records source and destination commits in the integration worktree.
+- Verification evidence: pending
+
+### Roadmap Task 7: Factory home, persistent chat, and live CLI canvas (R7)
+
+- Owner: root
+- Scope: `src/{bridge,FactoryHome,ManagerChat,RunCanvas,AgentNode,MessageEdge}.tsx`, `src/styles.css`, `src-tauri/src/lib.rs`, UI behavior tests
+- Dependencies: R4–R6
+- Status: NOT STARTED
+- Acceptance: home shows repositories/runs/worktrees/gates; one manager chat persists across run selection; real read-only agent sessions render on a pannable canvas; directed message arrows expose provenance; sequence gaps restore the snapshot.
+- Verification evidence: pending
+
+### Roadmap Task 8: GitHub PR tracking and conservative merge gate (R8)
+
+- Owner: root
+- Scope: `crates/factory-core/src/{github,policy}.rs`, `crates/factory-core/tests/merge_gate.rs`, `docs/repository-config.md`
+- Dependencies: R6 integrated commits and review evidence
+- Status: NOT STARTED
+- Acceptance: `gh` observation and idempotent PR actions; current-head required-check revalidation immediately before merge; risk policy blocks security, permission, migration, deployment, secret, privacy, and public-interface changes from auto-merge; PR bodies include durable evidence.
+- Verification evidence: pending
+
+### Roadmap Task 9: Production observation and alerts (R9)
+
+- Owner: root
+- Scope: `crates/factory-core/src/production.rs`, Tauri notifications/runtime, `docs/repository-config.md`, production-watch tests and UI
+- Dependencies: R8 merged-commit/deployment identity
+- Status: NOT STARTED
+- Acceptance: matching deployment and passing smoke check becomes healthy; failure persists an alert and waits without rollback/retry; missing evidence becomes unverified and alerts; state survives restart and window hiding.
+- Verification evidence: pending
+
+### Roadmap Task 10: Full acceptance and release readiness (R10)
+
+- Owner: root
+- Scope: `tests/e2e/factory-run.md`, README, user-facing errors, app/runtime acceptance
+- Dependencies: R4–R9
+- Status: NOT STARTED
+- Acceptance: two disposable repositories exercise concurrent linked runs, isolated workers, real Codex output, GitHub gate outcomes, production watch, window close/reopen, and controlled restart without duplicate actions; release checks and evidence are recorded.
+- Verification evidence: pending
