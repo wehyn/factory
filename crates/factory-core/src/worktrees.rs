@@ -742,7 +742,7 @@ impl WorktreeManager {
         })
     }
 
-    fn list_worktrees(&self) -> Result<Vec<Worktree>> {
+    pub fn list_worktrees(&self) -> Result<Vec<Worktree>> {
         self.ledger.with_connection(|connection| {
             let mut statement = connection.prepare(
                 "SELECT id, repo_id, run_id, role_kind, agent_id, base_sha, branch_name,

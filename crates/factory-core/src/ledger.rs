@@ -1,9 +1,9 @@
 use crate::model::{
-    Event, EventKind, FactorySnapshot, SequencedEvent, SessionId, SessionProcessState,
-    SessionSnapshot,
+    Event, EventKind, FactorySnapshot, ManagerChatMessage, ManagerChatRole, RedactedOutput, RepoId,
+    RunId, RunLink, RunRecord, SequencedEvent, SessionId, SessionProcessState, SessionSnapshot,
 };
 use anyhow::{anyhow, Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -40,12 +40,35 @@ impl Ledger {
                 payload_json TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS manager_chat_messages (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id TEXT NOT NULL UNIQUE,
+                session_id TEXT NOT NULL,
+                run_id TEXT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS repositories (
                 id TEXT PRIMARY KEY,
                 canonical_root TEXT NOT NULL UNIQUE,
                 remote_url TEXT,
                 default_branch TEXT NOT NULL,
                 registered_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS factory_runs (
+                id TEXT PRIMARY KEY,
+                repo_id TEXT NOT NULL REFERENCES repositories(id),
+                title TEXT NOT NULL,
+                base_sha TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS run_links (
+                run_id TEXT NOT NULL REFERENCES factory_runs(id),
+                linked_run_id TEXT NOT NULL REFERENCES factory_runs(id),
+                created_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(run_id, linked_run_id),
+                CHECK(run_id < linked_run_id)
             );
             CREATE TABLE IF NOT EXISTS worktrees (
                 id TEXT PRIMARY KEY,
@@ -211,15 +234,285 @@ impl Ledger {
             "TEXT NOT NULL DEFAULT ''",
         )?;
 
-        Ok(Self {
+        let ledger = Self {
             connection: Arc::new(Mutex::new(connection)),
             subscribers: Arc::new(Mutex::new(Vec::new())),
             database_path: Arc::new(path.to_path_buf()),
-        })
+        };
+        ledger.migrate_legacy_manager_chat()?;
+        Ok(ledger)
     }
 
     pub fn database_path(&self) -> &Path {
         self.database_path.as_path()
+    }
+
+    pub fn register_run_record(&self, run: &RunRecord) -> Result<()> {
+        let title = run.title.trim();
+        if title.is_empty() || title.chars().count() > 256 {
+            return Err(anyhow!("run title must contain 1 to 256 characters"));
+        }
+        self.with_connection(|connection| {
+            let transaction = connection.transaction()?;
+            let existing = transaction
+                .query_row(
+                    "SELECT repo_id, title, base_sha, created_at_ms FROM factory_runs WHERE id = ?1",
+                    [run.id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if let Some(existing) = existing {
+                if existing
+                    != (
+                        run.repo_id.to_string(),
+                        title.to_owned(),
+                        run.base_sha.clone(),
+                        run.created_at_ms,
+                    )
+                {
+                    return Err(anyhow!("run ID was reused with different run details"));
+                }
+                transaction.commit()?;
+                return Ok(());
+            }
+            transaction.execute(
+                "INSERT INTO factory_runs(id, repo_id, title, base_sha, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    run.id.to_string(),
+                    run.repo_id.to_string(),
+                    title,
+                    run.base_sha,
+                    run.created_at_ms,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn list_runs(&self) -> Result<Vec<RunRecord>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT id, repo_id, title, base_sha, created_at_ms
+                 FROM factory_runs ORDER BY created_at_ms DESC, id",
+            )?;
+            let rows = statement.query_map([], run_record_from_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("reading registered runs")
+        })
+    }
+
+    pub fn link_runs(&self, left: RunId, right: RunId) -> Result<RunLink> {
+        if left == right {
+            return Err(anyhow!("a run cannot link to itself"));
+        }
+        let (run_id, linked_run_id) = if left.to_string() < right.to_string() {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        self.with_connection(|connection| {
+            let transaction = connection.transaction()?;
+            let first = transaction
+                .query_row(
+                    "SELECT repo_id FROM factory_runs WHERE id = ?1",
+                    [run_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("run {run_id} is not registered"))?;
+            let second = transaction
+                .query_row(
+                    "SELECT repo_id FROM factory_runs WHERE id = ?1",
+                    [linked_run_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("run {linked_run_id} is not registered"))?;
+            if first == second {
+                return Err(anyhow!("linked runs must belong to different repositories"));
+            }
+            let created_at_ms = transaction
+                .query_row(
+                    "SELECT created_at_ms FROM run_links WHERE run_id = ?1 AND linked_run_id = ?2",
+                    params![run_id.to_string(), linked_run_id.to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            let created_at_ms = match created_at_ms {
+                Some(created_at_ms) => created_at_ms,
+                None => {
+                    let created_at_ms = now_ms();
+                    transaction.execute(
+                        "INSERT INTO run_links(run_id, linked_run_id, created_at_ms)
+                         VALUES (?1, ?2, ?3)",
+                        params![run_id.to_string(), linked_run_id.to_string(), created_at_ms],
+                    )?;
+                    created_at_ms
+                }
+            };
+            transaction.commit()?;
+            Ok(RunLink {
+                run_id,
+                linked_run_id,
+                created_at_ms,
+            })
+        })
+    }
+
+    pub fn list_linked_runs(&self, run_id: RunId) -> Result<Vec<RunId>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT CASE WHEN run_id = ?1 THEN linked_run_id ELSE run_id END AS other_run
+                 FROM run_links WHERE run_id = ?1 OR linked_run_id = ?1
+                 ORDER BY other_run",
+            )?;
+            let rows = statement.query_map([run_id.to_string()], |row| {
+                let id = row.get::<_, String>(0)?;
+                Uuid::parse_str(&id).map(RunId).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("reading linked runs")
+        })
+    }
+
+    pub fn record_manager_chat_message(
+        &self,
+        message_id: Uuid,
+        session_id: SessionId,
+        run_id: Option<RunId>,
+        role: ManagerChatRole,
+        content: &str,
+    ) -> Result<()> {
+        self.record_manager_chat_message_at(message_id, session_id, run_id, role, content, now_ms())
+    }
+
+    fn record_manager_chat_message_at(
+        &self,
+        message_id: Uuid,
+        session_id: SessionId,
+        run_id: Option<RunId>,
+        role: ManagerChatRole,
+        content: &str,
+        created_at_ms: i64,
+    ) -> Result<()> {
+        let role_text = manager_chat_role_text(role);
+        let content = RedactedOutput::new(content).as_str().to_owned();
+        self.with_connection(|connection| {
+            let transaction = connection.transaction()?;
+            let existing = transaction
+                .query_row(
+                    "SELECT session_id, run_id, role, content FROM manager_chat_messages
+                     WHERE message_id = ?1",
+                    [message_id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if let Some((stored_session, stored_run, stored_role, stored_content)) = existing {
+                if stored_session != session_id.to_string()
+                    || stored_run != run_id.map(|id| id.to_string())
+                    || stored_role != role_text
+                    || stored_content != content
+                {
+                    return Err(anyhow!(
+                        "manager chat message ID was reused with different content"
+                    ));
+                }
+                transaction.commit()?;
+                return Ok(());
+            }
+            transaction.execute(
+                "INSERT INTO manager_chat_messages
+                    (message_id, session_id, run_id, role, content, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    message_id.to_string(),
+                    session_id.to_string(),
+                    run_id.map(|id| id.to_string()),
+                    role_text,
+                    content,
+                    created_at_ms,
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    fn migrate_legacy_manager_chat(&self) -> Result<()> {
+        let legacy_rows = self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT event_id, session_id, payload_json, created_at_ms FROM events
+                 WHERE kind IN ('user_message', 'assistant_message') ORDER BY sequence",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("reading legacy manager conversation events")
+        })?;
+
+        for (event_id, session_id, payload, created_at_ms) in legacy_rows {
+            let event_id = Uuid::parse_str(&event_id)?;
+            let session_id = SessionId(Uuid::parse_str(&session_id)?);
+            let kind: EventKind = serde_json::from_str(&payload)
+                .context("decoding legacy manager conversation event")?;
+            let (role, content) = match kind {
+                EventKind::UserMessage { text } => (ManagerChatRole::User, text),
+                EventKind::AssistantMessage { text, .. } => (ManagerChatRole::Assistant, text),
+                _ => continue,
+            };
+            self.record_manager_chat_message_at(
+                event_id,
+                session_id,
+                None,
+                role,
+                &content,
+                created_at_ms,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn list_manager_chat(&self) -> Result<Vec<ManagerChatMessage>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT message_id, session_id, run_id, role, content, created_at_ms
+                 FROM (
+                    SELECT sequence, message_id, session_id, run_id, role, content, created_at_ms
+                    FROM manager_chat_messages ORDER BY created_at_ms DESC, sequence DESC LIMIT 200
+                 ) ORDER BY created_at_ms ASC, sequence ASC",
+            )?;
+            let rows = statement.query_map([], manager_chat_from_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("reading persistent manager chat")
+        })
     }
 
     pub(crate) fn with_connection<T>(
@@ -375,7 +668,7 @@ impl Ledger {
             let session = &mut snapshot.sessions[index];
             session.last_sequence = sequence;
             match kind {
-                EventKind::SessionCreated => {}
+                EventKind::SessionCreated | EventKind::ManagerSessionCreated => {}
                 EventKind::SessionStarted { thread_id } => {
                     session.thread_id = Some(thread_id);
                     session.process_state = SessionProcessState::Running;
@@ -388,6 +681,15 @@ impl Ledger {
                         session.output.remove(0);
                     }
                     session.output.push(output.as_str().to_owned());
+                }
+                EventKind::UserMessage { .. } => {}
+                EventKind::AssistantMessage { text, .. } => {
+                    if session.output.len() == MAX_SNAPSHOT_OUTPUTS {
+                        session.output.remove(0);
+                    }
+                    session
+                        .output
+                        .push(RedactedOutput::new(text).as_str().to_owned());
                 }
                 EventKind::TurnCompleted => {
                     session.process_state = SessionProcessState::Completed;
@@ -423,4 +725,77 @@ fn ensure_column(
         "ALTER TABLE {table} ADD COLUMN {column} {definition}"
     ))?;
     Ok(())
+}
+
+fn run_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
+    let id = row.get::<_, String>(0)?;
+    let repo_id = row.get::<_, String>(1)?;
+    let uuid_error = |column, error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    };
+    Ok(RunRecord {
+        id: RunId(Uuid::parse_str(&id).map_err(|error| uuid_error(0, error))?),
+        repo_id: RepoId(Uuid::parse_str(&repo_id).map_err(|error| uuid_error(1, error))?),
+        title: row.get(2)?,
+        base_sha: row.get(3)?,
+        created_at_ms: row.get(4)?,
+    })
+}
+
+fn manager_chat_role_text(role: ManagerChatRole) -> &'static str {
+    match role {
+        ManagerChatRole::User => "user",
+        ManagerChatRole::Assistant => "assistant",
+    }
+}
+
+fn manager_chat_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagerChatMessage> {
+    let id = row.get::<_, String>(0)?;
+    let session_id = row.get::<_, String>(1)?;
+    let run_id = row.get::<_, Option<String>>(2)?;
+    let role_text = row.get::<_, String>(3)?;
+    let role = match role_text.as_str() {
+        "user" => ManagerChatRole::User,
+        "assistant" => ManagerChatRole::Assistant,
+        _ => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                3,
+                "role".to_owned(),
+                rusqlite::types::Type::Text,
+            ))
+        }
+    };
+    let uuid_error = |column, error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    };
+    Ok(ManagerChatMessage {
+        id: Uuid::parse_str(&id).map_err(|error| uuid_error(0, error))?,
+        session_id: SessionId(Uuid::parse_str(&session_id).map_err(|error| uuid_error(1, error))?),
+        run_id: run_id
+            .map(|id| {
+                Uuid::parse_str(&id)
+                    .map(RunId)
+                    .map_err(|error| uuid_error(2, error))
+            })
+            .transpose()?,
+        role,
+        content: row.get(4)?,
+        created_at_ms: row.get(5)?,
+    })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
 }

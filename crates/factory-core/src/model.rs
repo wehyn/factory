@@ -63,6 +63,22 @@ pub struct Repository {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunRecord {
+    pub id: RunId,
+    pub repo_id: RepoId,
+    pub title: String,
+    pub base_sha: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunLink {
+    pub run_id: RunId,
+    pub linked_run_id: RunId,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "agent_id", rename_all = "snake_case")]
 pub enum WorktreeRole {
     Integration,
@@ -162,6 +178,23 @@ pub struct AgentMessage {
     pub contract_version: Option<u32>,
     pub created_at_ms: i64,
     pub acknowledged_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagerChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ManagerChatMessage {
+    pub id: Uuid,
+    pub session_id: SessionId,
+    pub run_id: Option<RunId>,
+    pub role: ManagerChatRole,
+    pub content: String,
+    pub created_at_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -336,21 +369,41 @@ fn token_regex() -> &'static regex::Regex {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventKind {
     SessionCreated,
-    SessionStarted { thread_id: String },
-    TurnStarted { turn_id: String },
+    #[serde(rename = "manager_session_created")]
+    ManagerSessionCreated,
+    SessionStarted {
+        thread_id: String,
+    },
+    TurnStarted {
+        turn_id: String,
+    },
     Output(RedactedOutput),
+    #[serde(rename = "user_message")]
+    UserMessage {
+        text: String,
+    },
+    #[serde(rename = "assistant_message")]
+    AssistantMessage {
+        item_id: String,
+        text: String,
+    },
     TurnCompleted,
     SessionInterrupted,
-    SessionFailed { message: RedactedOutput },
+    SessionFailed {
+        message: RedactedOutput,
+    },
 }
 
 impl EventKind {
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::SessionCreated => "session_created",
+            Self::ManagerSessionCreated => "manager_session_created",
             Self::SessionStarted { .. } => "session_started",
             Self::TurnStarted { .. } => "turn_started",
             Self::Output(_) => "output",
+            Self::UserMessage { .. } => "user_message",
+            Self::AssistantMessage { .. } => "assistant_message",
             Self::TurnCompleted => "turn_completed",
             Self::SessionInterrupted => "session_interrupted",
             Self::SessionFailed { .. } => "session_failed",

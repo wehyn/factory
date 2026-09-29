@@ -1,41 +1,34 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import "@xyflow/react/dist/style.css";
 import "./styles.css";
+import { FactoryHome } from "./FactoryHome";
+import { ManagerChat } from "./ManagerChat";
+import { RunCanvas } from "./RunCanvas";
 import {
-  getDisposableRepoPath,
+  getFactorySnapshot,
+  sendManagerMessage,
   subscribeFactory,
-  startDisposableSession,
-  type FactorySnapshot,
-  type SessionSnapshot,
+  type AgentMessage,
+  type FactoryHomeSnapshot,
 } from "./bridge";
 
-const DEFAULT_PROMPT =
-  "Reply with exactly the word hello. Do not use tools or modify files.";
-
-function stateLabel(session: SessionSnapshot | undefined) {
-  if (!session) return "Ready";
-  switch (session.process_state) {
-    case "starting": return "Starting";
-    case "running": return "Running";
-    case "completed": return "Completed";
-    case "interrupted": return "Interrupted";
-    case "failed": return "Needs attention";
-  }
-}
-
 function App() {
-  const [snapshot, setSnapshot] = useState<FactorySnapshot | null>(null);
-  const [repoPath, setRepoPath] = useState("");
-  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
+  const [snapshot, setSnapshot] = useState<FactoryHomeSnapshot | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedMessage, setSelectedMessage] = useState<AgentMessage>();
   const [error, setError] = useState("");
-  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
-
     void subscribeFactory(
       (nextSnapshot) => {
-        if (!cancelled) setSnapshot(nextSnapshot);
+        if (cancelled) return;
+        setSnapshot(nextSnapshot);
+        setSelectedRunId((current) => current && nextSnapshot.runs.some(({ run }) => run.id === current)
+          ? current
+          : nextSnapshot.runs[0]?.run.id ?? null);
+        setError("");
       },
       (reason) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
@@ -46,152 +39,79 @@ function App() {
         else unsubscribe = stop;
       })
       .catch((reason: unknown) => {
-        if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
       });
-
-    void getDisposableRepoPath()
-      .then((path) => {
-        if (!cancelled) setRepoPath(path);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
-      });
-
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
   }, []);
 
-  const sessions = snapshot?.sessions ?? [];
-  const session = sessions.length ? sessions[sessions.length - 1] : undefined;
-  const label = stateLabel(session);
+  const refresh = useCallback(async () => {
+    const next = await getFactorySnapshot();
+    setSnapshot(next);
+    return next;
+  }, []);
 
-  async function startSession(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!repoPath || !prompt.trim() || starting || session) return;
-    setStarting(true);
-    setError("");
-    try {
-      await startDisposableSession(repoPath, prompt.trim());
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setStarting(false);
-    }
+  const selectedRun = useMemo(
+    () => snapshot?.runs.find(({ run }) => run.id === selectedRunId),
+    [snapshot, selectedRunId],
+  );
+
+  async function submitManagerMessage(content: string) {
+    await sendManagerMessage(content, selectedRunId);
+    await refresh();
+  }
+
+  function selectRun(runId: string) {
+    setSelectedRunId(runId);
+    setSelectedMessage(undefined);
   }
 
   return (
-    <main className="shell">
+    <main className="app-shell">
       <header className="topbar">
-        <div className="brand-mark" aria-hidden="true">A</div>
-        <div className="brand-copy">
-          <p className="eyebrow">Resident Codex session</p>
-          <h1>Agentic Factory</h1>
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true">A</div>
+          <div><div className="brand-name">AGENTIC FACTORY</div><div className="brand-sub">Local agent workspace</div></div>
         </div>
-        <div className="service-state" aria-live="polite">
-          <span className={snapshot ? "service-dot" : "service-dot service-dot--pending"} />
-          {snapshot ? "Service connected" : "Connecting to local service"}
+        <div className="top-sep" />
+        <div className="project-title">
+          <span className="project-kicker">Selected run</span>
+          <span className="project-name">{selectedRun?.run.title ?? "No run selected"}</span>
         </div>
+        <div className="top-spacer" />
+        <span className={`service-pill ${snapshot ? "is-live" : "is-pending"}`} aria-live="polite">
+          <i />{snapshot ? "Service connected" : "Connecting to local service"}
+        </span>
+        {snapshot?.manager_turn_active && <span className="working-pill"><i />Manager working</span>}
       </header>
-
-      <section className="workspace" aria-labelledby="workspace-title">
-        <div className="workspace-intro">
-          <div>
-            <p className="eyebrow">Your local workspace</p>
-            <h2 id="workspace-title">A persistent home for Codex work.</h2>
-            <p className="welcome-copy">
-              Start one real Codex session in a dedicated disposable repository. The app
-              keeps the service resident when this window closes and restores output from
-              its local event ledger.
-            </p>
-          </div>
-          <div className="status-card">
-            <span className="status-card__label">Session status</span>
-            <strong>{label}</strong>
-            <span className="safety-pill"><span aria-hidden="true" />Read only</span>
-          </div>
+      {!snapshot ? (
+        <section className="startup-state" aria-live="polite">
+          <span className="startup-mark">⌁</span>
+          <h1>Connecting to Agentic Factory</h1>
+          <p>Loading local repositories, runs, and session history.</p>
+          {error && <p className="error-banner" role="alert">{error}</p>}
+        </section>
+      ) : (
+        <div className="workspace-layout">
+          <ManagerChat snapshot={snapshot} selectedRun={selectedRun} onSend={submitManagerMessage} />
+          <RunCanvas
+            run={selectedRun}
+            snapshot={snapshot}
+            onMessageSelect={setSelectedMessage}
+          />
+          <FactoryHome
+            snapshot={snapshot}
+            selectedRunId={selectedRunId}
+            selectedMessage={selectedMessage}
+            error={error}
+            onSelectRun={selectRun}
+            onClearMessage={() => setSelectedMessage(undefined)}
+            onRefresh={refresh}
+          />
         </div>
-
-        <div className="content-grid">
-          <section className="session-card" aria-labelledby="session-title">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Live session</p>
-                <h3 id="session-title">Session output</h3>
-              </div>
-              {session?.thread_id && <span className="thread-chip">Thread connected</span>}
-            </div>
-
-            {session ? (
-              <div className="output-list" aria-live="polite" aria-label="Codex session output">
-                {session.output.length > 0 ? (
-                  session.output.slice(-40).map((output, index) => (
-                    <pre className="output-entry" key={`${session.session_id}-${index}`}>
-                      {output}
-                    </pre>
-                  ))
-                ) : (
-                  <p className="empty-output">Waiting for Codex output…</p>
-                )}
-                {session.process_state === "failed" && (
-                  <p className="session-warning" role="status">
-                    The App Server stopped before the turn completed.
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="empty-session">
-                <div className="empty-glyph" aria-hidden="true">⌁</div>
-                <p>Your first session will appear here.</p>
-                <span>Output is real Codex text, redacted and stored on this Mac.</span>
-              </div>
-            )}
-          </section>
-
-          <aside className="launch-card" aria-labelledby="launch-title">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Disposable repository</p>
-                <h3 id="launch-title">Start a session</h3>
-              </div>
-              <span className="lock-icon" aria-hidden="true">⌑</span>
-            </div>
-            <p className="launch-copy">
-              Codex can read this isolated fixture. The repository is outside your projects,
-              and the sandbox blocks file changes.
-            </p>
-            <form onSubmit={startSession}>
-              <label htmlFor="session-prompt">Prompt for the disposable repository</label>
-              <textarea
-                id="session-prompt"
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                maxLength={16_000}
-                rows={4}
-                disabled={Boolean(session) || starting}
-              />
-              <button type="submit" disabled={!snapshot || !repoPath || Boolean(session) || starting || !prompt.trim()}>
-                {starting ? "Starting…" : session ? "Session already started" : "Start read-only session"}
-              </button>
-            </form>
-            {error && <p className="error-banner" role="alert">{error}</p>}
-            <div className="safety-note">
-              <span aria-hidden="true">✓</span>
-              <p>Read-only sandbox · No approval prompts · Local event history</p>
-            </div>
-          </aside>
-        </div>
-      </section>
-
-      <footer className="footer">
-        <span>Local first · Read only</span>
-        <span>Codex App Server</span>
-      </footer>
+      )}
     </main>
   );
 }

@@ -13,10 +13,11 @@ pub use mailbox::{Mailbox, McpPrincipal};
 pub use mcp::{FactoryMcpConfig, FactoryMcpServer};
 pub use model::{
     AgentId, AgentMessage, ArchiveOutcome, AssignSliceRequest, ContractDecision, ContractStatus,
-    Event, EventKind, FactorySnapshot, IntegrationRecord, MessageId, MessageKind, MessageRecipient,
-    RecoveryIssue, RedactedOutput, RepoId, Repository, RunId, SchedulerBlocker, SequencedEvent,
-    SessionId, SessionProcessState, SessionSnapshot, SliceAssignment, SliceId, SliceStatus,
-    WorkerExit, Worktree, WorktreeId, WorktreeRole, WorktreeState, WorktreeStatus,
+    Event, EventKind, FactorySnapshot, IntegrationRecord, ManagerChatMessage, ManagerChatRole,
+    MessageId, MessageKind, MessageRecipient, RecoveryIssue, RedactedOutput, RepoId, Repository,
+    RunId, RunLink, RunRecord, SchedulerBlocker, SequencedEvent, SessionId, SessionProcessState,
+    SessionSnapshot, SliceAssignment, SliceId, SliceStatus, WorkerExit, Worktree, WorktreeId,
+    WorktreeRole, WorktreeState, WorktreeStatus,
 };
 pub use repositories::RepositoryRegistry;
 pub use scheduler::{

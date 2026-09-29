@@ -775,6 +775,23 @@ impl Scheduler {
         self.find_assignment(slice_id)
     }
 
+    pub fn session_for_agent(
+        &self,
+        agent_id: AgentId,
+    ) -> Result<Option<crate::model::SessionSnapshot>> {
+        let assignment = self.find_assignment_for_agent(agent_id)?;
+        if assignment.attempt_count == 0 {
+            return Ok(None);
+        }
+        let (session_id, _, _) = self.latest_attempt(assignment.id)?;
+        Ok(self
+            .ledger
+            .snapshot()?
+            .sessions
+            .into_iter()
+            .find(|session| session.session_id == session_id))
+    }
+
     pub fn reconcile_after_restart(&self) -> Result<usize> {
         self.ledger.with_connection(|connection| {
             let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;

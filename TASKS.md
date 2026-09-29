@@ -81,11 +81,12 @@ The roadmap IDs below refer to `outputs/agentic-factory-implementation-plan.md`;
 ### Roadmap Task 7: Factory home, persistent chat, and live CLI canvas (R7)
 
 - Owner: root
-- Scope: `src/{bridge,FactoryHome,ManagerChat,RunCanvas,AgentNode,MessageEdge}.tsx`, `src/styles.css`, `src-tauri/src/lib.rs`, UI behavior tests
+- Scope: frontend bridge and workspace/canvas components, `package.json`, `src/styles.css`, Tauri home/chat commands, durable chat migration, App Server multi-turn support, and UI/core recovery tests
 - Dependencies: R4–R6
-- Status: NOT STARTED
+- Status: COMPLETE
 - Acceptance: home shows repositories/runs/worktrees/gates; one manager chat persists across run selection; real read-only agent sessions render on a pannable canvas; directed message arrows expose provenance; sequence gaps restore the snapshot.
-- Verification evidence: pending
+- Verification evidence: `cargo test -p factory-core` passed (44 passed, five live tests ignored); `npm test -- --run` passed (three UI behavior tests); `npm run build`, `cargo check --workspace`, `cargo fmt --all -- --check`, and `git diff --check` passed. The real Tauri development binary compiled and launched against the existing local data; its older installed app has the same macOS bundle identity, so native viewport inspection is recorded for R10's isolated release acceptance.
+- Commit: pending
 
 ### Roadmap Task 8: GitHub PR tracking and conservative merge gate (R8)
 

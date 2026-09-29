@@ -22,6 +22,12 @@ A builder works only in its assigned worktree and allowed paths. Its Codex turn 
 
 The MCP server binds identity from the process configuration. Tool arguments cannot select a different principal or run. Every operation is authorized in the Rust handler, even when a caller invokes a tool name that is absent from its advertised tool list.
 
+## Manager chat and live workspace
+
+The workspace keeps one ordered manager conversation across run selection. Each sent user message records its active run, and manager output is stored after redaction in the local SQLite ledger. Up to the latest 200 messages are restored into the chat panel after reopening the app. Existing ledgers that contain the earlier `user_message` and `assistant_message` events are read without rewriting or dropping those events; their chat rows are imported idempotently and redacted during import.
+
+The canvas is a read-only projection of the selected run. It shows the manager, current builder sessions, recent session output, assignment edges, and directed mailbox messages. Selecting a message edge opens its sender, recipient, body, type, and run in the provenance panel. A newer event causes the frontend to reload the authoritative service snapshot so spawned sessions and gate state are not lost across sequence gaps.
+
 ## Message and contract behavior
 
 Messages are durable run records. A directed worker message appears in exactly one recipient inbox and in the manager's run ledger. It remains available until acknowledged; reading it again does not create a duplicate. If a worker is not in an active turn, delivery waits for its next inbox read.

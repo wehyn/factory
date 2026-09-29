@@ -37,7 +37,7 @@ fn should_record_thread_started(state: &ProtocolState, thread_id: &str) -> bool 
 }
 
 fn should_ignore_late_turn_notification(state: &ProtocolState) -> bool {
-    state.startup_failure_recorded || !state.terminal_turns.is_empty()
+    state.startup_failure_recorded
 }
 
 struct RunnerShared {
@@ -680,9 +680,12 @@ fn handle_notification(shared: &Arc<RunnerShared>, method: &str, params: &Value)
         "item/completed" => {
             let item = params.get("item").unwrap_or(&Value::Null);
             if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                if let (Some(turn_id), Some(text)) = (
+                    params.get("turnId").and_then(Value::as_str),
+                    item.get("text").and_then(Value::as_str),
+                ) {
                     if !text.is_empty() {
-                        shared.append(EventKind::Output(RedactedOutput::new(text)))?;
+                        shared.append_turn_output(turn_id, text)?;
                     }
                 }
             }
@@ -762,6 +765,7 @@ impl RunnerShared {
             .lock()
             .map_err(|_| anyhow!("Codex runner state lock was poisoned"))?;
         if should_ignore_late_turn_notification(&state)
+            || state.terminal_turns.contains(turn_id)
             || state.active_turn.as_deref() == Some(turn_id)
         {
             return Ok(());
@@ -798,7 +802,9 @@ impl RunnerShared {
             .state
             .lock()
             .map_err(|_| anyhow!("Codex runner state lock was poisoned"))?;
-        if should_ignore_late_turn_notification(&state) {
+        if should_ignore_late_turn_notification(&state)
+            || state.active_turn.as_deref() != Some(turn_id)
+        {
             return Ok(());
         }
         if !state.terminal_turns.insert(turn_id.to_owned()) {
@@ -809,6 +815,17 @@ impl RunnerShared {
             state.active_turn = None;
         }
         Ok(())
+    }
+
+    fn append_turn_output(&self, turn_id: &str, text: &str) -> Result<()> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("Codex runner state lock was poisoned"))?;
+        if state.startup_failure_recorded || state.active_turn.as_deref() != Some(turn_id) {
+            return Ok(());
+        }
+        self.append(EventKind::Output(RedactedOutput::new(text)))
     }
 
     fn record_failure(&self, message: &str) -> Result<()> {

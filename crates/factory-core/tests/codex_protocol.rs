@@ -102,6 +102,13 @@ case "$mode" in
   workspace-policy)
     cat "$fixture"
     ;;
+  multi-turn)
+    cat "$fixture"
+    read_request
+    id=$(request_id "$line")
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"01a0d9ed-6184-7d73-853f-05ad64f41b5f"}}}\n' "$id"
+    sed -e 's/01a0d9ed-6184-7d73-853f-05ad64f41b5c/01a0d9ed-6184-7d73-853f-05ad64f41b5f/g' -e 's/"text":"hello"/"text":"second turn"/' "$fixture"
+    ;;
   failure)
     sed '$d' "$fixture"
     ;;
@@ -166,6 +173,59 @@ fn persists_observed_turn_completion() -> anyhow::Result<()> {
         SessionProcessState::Completed
     );
     Ok(())
+}
+
+#[test]
+fn one_runner_accepts_multiple_sequential_turns_and_ignores_prior_turn_events() -> anyhow::Result<()>
+{
+    let harness = FakeServer::new()?;
+    let ledger = harness.ledger();
+    let mut runner = CodexRunner::start_with_command(
+        harness.command("multi-turn"),
+        harness.repo(),
+        Arc::clone(&ledger),
+        harness.session(),
+    )?;
+    runner.start_turn("First prompt")?;
+    wait_until_completed(&ledger)?;
+    runner.start_turn("Second prompt")?;
+    runner.wait_for_exit()?;
+
+    let snapshot = ledger.snapshot()?;
+    assert_eq!(snapshot.sessions[0].output, vec!["hello", "second turn"]);
+    assert_eq!(
+        snapshot.sessions[0].process_state,
+        SessionProcessState::Completed
+    );
+    let connection = rusqlite::Connection::open(ledger.database_path())?;
+    let completed_turns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND kind = 'turn_completed'",
+        [harness.session().to_string()],
+        |row| row.get(0),
+    )?;
+    assert_eq!(completed_turns, 2);
+    Ok(())
+}
+
+fn wait_until_completed(ledger: &Ledger) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let snapshot = ledger.snapshot()?;
+        match snapshot
+            .sessions
+            .first()
+            .map(|session| session.process_state)
+        {
+            Some(SessionProcessState::Completed) => return Ok(()),
+            Some(SessionProcessState::Failed | SessionProcessState::Interrupted) => {
+                anyhow::bail!("fake Codex turn did not complete successfully: {snapshot:?}")
+            }
+            _ if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => anyhow::bail!("fake Codex turn did not complete before the timeout"),
+        }
+    }
 }
 
 #[test]

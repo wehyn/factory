@@ -2,20 +2,30 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 export type SessionProcessState = "starting" | "running" | "completed" | "interrupted" | "failed";
-
-export type SessionEventKind =
-  | { type: "session_created" }
-  | { type: "session_started"; data: { thread_id: string } }
-  | { type: "turn_started"; data: { turn_id: string } }
-  | { type: "output"; data: string }
-  | { type: "turn_completed" }
-  | { type: "session_interrupted" }
-  | { type: "session_failed"; data: { message: string } };
+export type SliceStatus =
+  | "preparing"
+  | "waiting_for_contract"
+  | "queued"
+  | "running"
+  | "retryable"
+  | "completed"
+  | "integrated"
+  | "paused"
+  | "blocked";
+export type WorktreeStatus =
+  | "clean"
+  | "dirty"
+  | "busy"
+  | "missing"
+  | "unsafe"
+  | "creating"
+  | "archived"
+  | "recovery_required";
 
 export type SessionEvent = {
   id: string;
   session_id: string;
-  kind: SessionEventKind;
+  kind: { type: string; data?: unknown };
   created_at_ms: number;
 };
 
@@ -34,112 +44,182 @@ export type SessionSnapshot = {
   created_at_ms: number;
 };
 
-export type FactorySnapshot = {
-  last_sequence: number;
-  sessions: SessionSnapshot[];
+export type ManagerChatMessage = {
+  id: string;
+  session_id: string;
+  run_id: string | null;
+  role: "user" | "assistant";
+  content: string;
+  created_at_ms: number;
 };
 
-export async function getSnapshot(): Promise<FactorySnapshot> {
-  return invoke<FactorySnapshot>("get_snapshot");
+export type Repository = {
+  id: string;
+  canonical_root: string;
+  remote_url: string | null;
+  default_branch: string;
+  registered_at_ms: number;
+};
+
+export type RunRecord = {
+  id: string;
+  repo_id: string;
+  title: string;
+  base_sha: string;
+  created_at_ms: number;
+};
+
+export type Worktree = {
+  id: string;
+  repo_id: string;
+  run_id: string;
+  role: { kind: "integration" } | { kind: "agent"; agent_id: string };
+  base_sha: string;
+  branch_name: string;
+  path: string;
+  state: "creating" | "active" | "archived" | "recovery_required";
+  created_at_ms: number;
+};
+
+export type SliceAssignment = {
+  id: string;
+  run_id: string;
+  assignment_key: string;
+  objective: string;
+  acceptance_evidence: string;
+  allowed_paths: string[];
+  dependency_ids: string[];
+  contract_keys: string[];
+  agent_id: string;
+  worktree_id: string | null;
+  attempt_count: number;
+  source_commit: string | null;
+  completion_evidence: string | null;
+  status: SliceStatus;
+  blocked_reason: string | null;
+  created_at_ms: number;
+};
+
+export type MessageRecipient =
+  | { kind: "manager" }
+  | { kind: "agent"; agent_id: string };
+
+export type AgentMessage = {
+  id: string;
+  run_id: string;
+  from: MessageRecipient;
+  to: MessageRecipient;
+  kind: "question" | "answer" | "handoff" | "contract" | "blocker" | "completion";
+  body: string;
+  contract_key: string | null;
+  contract_version: number | null;
+  created_at_ms: number;
+  acknowledged_at_ms: number | null;
+};
+
+export type SchedulerBlocker = {
+  id: string;
+  run_id: string;
+  slice_id: string | null;
+  kind: string;
+  detail: string;
+  created_at_ms: number;
+  resolved_at_ms: number | null;
+};
+
+export type WorktreeHomeView = { worktree: Worktree; status: WorktreeStatus };
+export type AgentCanvasView = {
+  assignment: SliceAssignment;
+  worktree: WorktreeHomeView | null;
+  session: SessionSnapshot | null;
+};
+
+export type RunHomeView = {
+  run: RunRecord;
+  repository: Repository;
+  status: string;
+  integration_ready: boolean;
+  integration_gate: string;
+  pr_gate: string;
+  production_gate: string;
+  worktrees: WorktreeHomeView[];
+  agents: AgentCanvasView[];
+  messages: AgentMessage[];
+  blockers: SchedulerBlocker[];
+  linked_run_ids: string[];
+};
+
+export type FactoryHomeSnapshot = {
+  last_sequence: number;
+  sessions: SessionSnapshot[];
+  manager_session_id: string | null;
+  manager_turn_active: boolean;
+  manager_chat: ManagerChatMessage[];
+  repositories: Repository[];
+  runs: RunHomeView[];
+};
+
+export async function getFactorySnapshot(): Promise<FactoryHomeSnapshot> {
+  return invoke<FactoryHomeSnapshot>("get_factory_snapshot");
 }
 
-export async function getDisposableRepoPath(): Promise<string> {
-  return invoke<string>("get_disposable_repo_path");
+export async function registerRepository(path: string): Promise<Repository> {
+  return invoke<Repository>("register_repository", { path });
 }
 
-export async function startDisposableSession(repoPath: string, prompt: string): Promise<string> {
-  return invoke<string>("start_disposable_session", { repoPath, prompt });
+export async function createRun(repoId: string, title: string): Promise<RunRecord> {
+  return invoke<RunRecord>("create_run", { repoId, title });
 }
 
-export function applyFactoryEvent(
-  snapshot: FactorySnapshot,
-  sequenced: SequencedFactoryEvent,
-): FactorySnapshot {
-  const event = sequenced.event;
-  const sessions = [...snapshot.sessions];
-  let index = sessions.findIndex((session) => session.session_id === event.session_id);
-
-  if (index < 0) {
-    index = sessions.length;
-    sessions.push({
-      session_id: event.session_id,
-      process_state: "starting",
-      thread_id: null,
-      output: [],
-      failure_count: 0,
-      last_sequence: sequenced.sequence,
-      created_at_ms: event.created_at_ms,
-    });
-  }
-
-  const current = sessions[index];
-  let next: SessionSnapshot = { ...current, last_sequence: sequenced.sequence };
-  switch (event.kind.type) {
-    case "session_created":
-      next = { ...next, process_state: "starting", created_at_ms: event.created_at_ms };
-      break;
-    case "session_started":
-      next = { ...next, process_state: "running", thread_id: event.kind.data.thread_id };
-      break;
-    case "turn_started":
-      next = { ...next, process_state: "running" };
-      break;
-    case "output":
-      next = { ...next, output: [...next.output, event.kind.data].slice(-40) };
-      break;
-    case "turn_completed":
-      next = { ...next, process_state: "completed" };
-      break;
-    case "session_interrupted":
-      next = { ...next, process_state: "interrupted" };
-      break;
-    case "session_failed":
-      next = { ...next, process_state: "failed", failure_count: next.failure_count + 1 };
-      break;
-  }
-
-  sessions[index] = next;
-  return { last_sequence: sequenced.sequence, sessions };
+export async function linkRuns(runId: string, linkedRunId: string): Promise<void> {
+  return invoke<void>("link_runs", { runId, linkedRunId });
 }
 
-export async function subscribeFactory(
-  onSnapshot: (snapshot: FactorySnapshot) => void,
+export async function sendManagerMessage(content: string, runId: string | null): Promise<void> {
+  return invoke<void>("send_manager_message", { content, runId });
+}
+
+export function subscribeFactory(
+  onSnapshot: (snapshot: FactoryHomeSnapshot) => void,
   onError?: (error: unknown) => void,
 ): Promise<() => void> {
-  let current: FactorySnapshot | undefined;
+  return subscribeFactoryInner(onSnapshot, onError);
+}
+
+async function subscribeFactoryInner(
+  onSnapshot: (snapshot: FactoryHomeSnapshot) => void,
+  onError?: (error: unknown) => void,
+): Promise<() => void> {
+  let current: FactoryHomeSnapshot | undefined;
   let closed = false;
   let queued = Promise.resolve();
   const buffered: SequencedFactoryEvent[] = [];
 
-  const unlisten = await listen<SequencedFactoryEvent>("factory-event", ({ payload }) => {
-    queued = queued.then(async () => {
-      if (closed) return;
-      if (!current) {
-        buffered.push(payload);
-        return;
-      }
-      await accept(payload);
-    }).catch((error: unknown) => onError?.(error));
-  });
-
   const reload = async () => {
-    current = await getSnapshot();
+    current = await getFactorySnapshot();
     onSnapshot(current);
   };
 
-  const accept = async (payload: SequencedFactoryEvent) => {
-    if (!current || payload.sequence <= current.last_sequence) return;
-    if (payload.sequence !== current.last_sequence + 1) {
-      await reload();
-      return;
-    }
-    current = applyFactoryEvent(current, payload);
-    onSnapshot(current);
-  };
+  const unlisten = await listen<SequencedFactoryEvent>("factory-event", ({ payload }) => {
+    queued = queued
+      .then(async () => {
+        if (closed) return;
+        if (!current) {
+          buffered.push(payload);
+          return;
+        }
+        if (payload.sequence <= current.last_sequence) return;
+        // The service snapshot is authoritative for canvas nodes, messages, and gate state.
+        await reload();
+      })
+      .catch((error: unknown) => onError?.(error));
+  });
 
   try {
     await reload();
-    for (const payload of buffered.splice(0)) await accept(payload);
+    for (const payload of buffered.splice(0)) {
+      if (payload.sequence > (current?.last_sequence ?? 0)) await reload();
+    }
   } catch (error) {
     closed = true;
     unlisten();
