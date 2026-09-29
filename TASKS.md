@@ -73,9 +73,10 @@ The roadmap IDs below refer to `outputs/agentic-factory-implementation-plan.md`;
 - Owner: root
 - Scope: `crates/factory-core/src/scheduler.rs`, `crates/factory-core/tests/scheduler_recovery.rs`
 - Dependencies: R4 and R5
-- Status: NOT STARTED
+- Status: COMPLETE
 - Acceptance: independent slices schedule concurrently, dependent slices wait for every dependency, restart cannot duplicate a slice, retries are bounded, and manager integration records source and destination commits in the integration worktree.
-- Verification evidence: pending
+- Verification evidence: `cargo test -p factory-core` passed (40 passed, three live tests ignored by default); `cargo check --workspace`, `cargo fmt --all -- --check`, and `git diff --check` passed. The explicit two-worker disposable-repository Codex probe passed: both real App Server workers edited disjoint files, sent completion evidence through Factory MCP, and the service recorded and integrated their scoped commits. Scheduler tests cover dependency gating, restart blocking, bounded retry, scope enforcement, and source/destination SHA records.
+- Commit: 87cb6f0 (`feat: schedule bounded agent work`)
 
 ### Roadmap Task 7: Factory home, persistent chat, and live CLI canvas (R7)
 
