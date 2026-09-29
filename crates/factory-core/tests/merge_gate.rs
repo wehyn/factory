@@ -165,16 +165,32 @@ fn token_and_credential_changes_remain_outside_the_auto_merge_gate() {
 }
 
 #[test]
-fn deployment_workflow_changes_require_human_review() {
-    let policy = RepositoryPolicy {
-        auto_merge_enabled: true,
-        required_checks: vec!["CI".to_owned()],
-        auto_merge_paths: vec![".github/workflows/".to_owned()],
-        max_auto_merge_changed_lines: 40,
-    };
-    let diff = "diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml\n@@ -1 +1 @@\n-name: release\n+name: release\n";
+fn sensitive_paths_require_human_review_even_when_allowlisted() {
+    let cases = [
+        ("security", "src/security/policy.rs"),
+        ("permissions", "src/permissions.rs"),
+        ("migration", "db/migrations/001_add_flag.sql"),
+        ("deployment", ".github/workflows/release.yml"),
+        ("secret", "config/secrets.toml"),
+        ("privacy", "src/privacy.rs"),
+        ("public interface", "src/public-api/response.ts"),
+    ];
 
-    assert_eq!(classify_risk(diff, &policy).level, RiskLevel::HumanReview);
+    for (category, path) in cases {
+        let policy = RepositoryPolicy {
+            auto_merge_enabled: true,
+            required_checks: vec!["CI".to_owned()],
+            auto_merge_paths: vec![path.to_owned()],
+            max_auto_merge_changed_lines: 40,
+        };
+        let diff = format!("diff --git a/{path} b/{path}\n@@ -1 +1 @@\n-old\n+new\n");
+
+        assert_eq!(
+            classify_risk(&diff, &policy).level,
+            RiskLevel::HumanReview,
+            "{category} changes stay gated even when explicitly allowlisted"
+        );
+    }
 }
 
 #[test]

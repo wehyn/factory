@@ -52,24 +52,8 @@ fn production_alert_is_deduplicated_acknowledged_and_resolved_across_restarts() 
 {
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("ledger.sqlite");
-    let repo_id = RepoId::new();
-    let run = RunRecord {
-        id: RunId::new(),
-        repo_id,
-        title: "Observe a release".to_owned(),
-        base_sha: "a".repeat(40),
-        created_at_ms: 1,
-    };
     let expected = "b".repeat(40);
-    let ledger = Ledger::open(&path)?;
-    let connection = rusqlite::Connection::open(&path)?;
-    connection.execute(
-        "INSERT INTO repositories(id, canonical_root, default_branch, registered_at_ms)
-         VALUES (?1, '/tmp/production-fixture', 'main', 1)",
-        [repo_id.to_string()],
-    )?;
-    drop(connection);
-    ledger.register_run_record(&run)?;
+    let (ledger, run) = registered_production_run(&path)?;
 
     let failed = evaluate_production(ProductionInput {
         run_id: run.id,
@@ -163,6 +147,57 @@ fn production_alert_is_deduplicated_acknowledged_and_resolved_across_restarts() 
 }
 
 #[test]
+fn mismatched_deployment_persists_waiting_alert_across_restart() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("ledger.sqlite");
+    let (ledger, run) = registered_production_run(&path)?;
+    let expected = "b".repeat(40);
+    let deployed = "a".repeat(40);
+    let mismatch = evaluate_production(ProductionInput {
+        run_id: run.id,
+        expected_sha: Some(expected.clone()),
+        deployed_sha: Some(deployed.clone()),
+        smoke: SmokeCheckState::Passed,
+        environment_id: Some("staging-release-check".to_owned()),
+        detail: "Deployment is still serving the previous commit".to_owned(),
+    });
+
+    assert_eq!(mismatch.status, ProductionStatus::WaitingForDeployment);
+    let recorded = ledger.record_production_observation(&mismatch)?;
+    assert!(recorded.new_alert);
+    let alert_id = recorded.state.alert.as_ref().unwrap().id;
+    assert_eq!(
+        recorded.state.alert.as_ref().unwrap().status,
+        ProductionStatus::WaitingForDeployment
+    );
+
+    let mut repeated = mismatch.clone();
+    repeated.id = uuid::Uuid::new_v4();
+    repeated.observed_at_ms += 1;
+    let duplicate = ledger.record_production_observation(&repeated)?;
+    assert!(
+        !duplicate.new_alert,
+        "the same SHA mismatch should reuse its alert"
+    );
+    assert_eq!(duplicate.state.alert.unwrap().id, alert_id);
+
+    drop(ledger);
+    let reopened = Ledger::open(&path)?;
+    let persisted = reopened
+        .latest_production_state(run.id)?
+        .expect("mismatch state survives reopening the ledger");
+    let observation = persisted.observation.expect("observation is persisted");
+    assert_eq!(observation.status, ProductionStatus::WaitingForDeployment);
+    assert_eq!(observation.expected_sha.as_deref(), Some(expected.as_str()));
+    assert_eq!(observation.deployed_sha.as_deref(), Some(deployed.as_str()));
+    let alert = persisted.alert.expect("mismatch alert is persisted");
+    assert_eq!(alert.id, alert_id);
+    assert_eq!(alert.status, ProductionStatus::WaitingForDeployment);
+    assert_eq!(alert.expected_sha.as_deref(), Some(expected.as_str()));
+    Ok(())
+}
+
+#[test]
 fn repository_production_config_rejects_http_and_embedded_credentials() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     std::fs::write(
@@ -249,4 +284,25 @@ esac
     permissions.set_mode(0o700);
     std::fs::set_permissions(path, permissions)?;
     Ok(())
+}
+
+fn registered_production_run(path: &Path) -> anyhow::Result<(Ledger, RunRecord)> {
+    let repo_id = RepoId::new();
+    let run = RunRecord {
+        id: RunId::new(),
+        repo_id,
+        title: "Observe a release".to_owned(),
+        base_sha: "a".repeat(40),
+        created_at_ms: 1,
+    };
+    let ledger = Ledger::open(path)?;
+    let connection = rusqlite::Connection::open(path)?;
+    connection.execute(
+        "INSERT INTO repositories(id, canonical_root, default_branch, registered_at_ms)
+         VALUES (?1, '/tmp/production-fixture', 'main', 1)",
+        [repo_id.to_string()],
+    )?;
+    drop(connection);
+    ledger.register_run_record(&run)?;
+    Ok((ledger, run))
 }

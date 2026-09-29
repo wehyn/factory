@@ -107,6 +107,10 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
   fresh check completes.
 - [ ] Click **Run production check** to request a new observation. Confirm healthy state resolves
   the prior alert without deleting its history.
+- [x] Fixture-only: a different deployment SHA stays `waiting_for_deployment`; its alert is
+  persisted and deduplicated across ledger reopen. Sensitive-path fixtures also keep security,
+  permission, migration, deployment, secret, privacy, and public-interface edits in human review.
+  These fixture checks do not replace the unchecked live deployment observations above.
 
 ## Window and process lifecycle
 
@@ -141,11 +145,11 @@ git diff --check
 
 This implementation run verifies the merge path against a fake `gh` executable, production
 outcomes against a fake `curl` executable, durable SQLite recovery, workspace builds, and a
-packaged Tauri build. Fresh verification for code commit `3921381` passed `cargo fmt --all -- --check`,
-`cargo test --workspace` (74 passed, 3 ignored), `npm test -- --run` (4 passed), `npm run build`,
-and `git diff --check`; the isolated preview app rebuilt successfully. The recorded 2160×1440
-visual review and the three individually run App Server/MCP/parallel-worker integration cases are
-from the earlier acceptance run.
+packaged Tauri build. Fresh verification after the R8/R9 fixture additions passed `cargo fmt --all
+-- --check`, `cargo test --workspace` (75 passed, 3 ignored), `npm test -- --run` (4 passed),
+`npm run build`, and `git diff --check`; the isolated preview app rebuilt successfully from code
+commit `3921381`. The recorded 2160×1440 visual review and the three individually run App
+Server/MCP/parallel-worker integration cases are from the earlier acceptance run.
 
 Skipped live steps and why:
 
