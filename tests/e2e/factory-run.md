@@ -69,6 +69,11 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
   requirement.
 - [ ] Push a new commit after checks pass. Refresh the PR; stale checks and an approval from the
   previous head cannot authorize a merge.
+- Live partial evidence: after the original `verify` passed, a docs-only head-revalidation probe
+  was pushed to run B as `7bec48bc514f01ae37578f6602fdabc2084b664f`. `verify` passed for that SHA
+  in run `36566050494`, and the preview app refreshed PR #1 against the new head. No approval
+  existed on the previous head, so approval invalidation remains unverified and this item stays
+  unchecked.
 - [ ] Change a permission, migration, deployment/workflow, secret, privacy, security, or public API
   surface. The gate waits for Wayne even when checks pass.
 - [ ] Make a small docs-only change with every configured check passing and an independent review
@@ -85,6 +90,9 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
 - [x] Recover the interrupted PR-creation receipt: after a successful live refresh of PR #1, the
   ledger action `create-pr:1be942e4-2d2b-4704-a764-1f0d879f154f` is `completed` with a stored
   result. A regression test confirms retrying that key does not create a second PR.
+- Current PR #1 head after the follow-up probe is `7bec48bc514f01ae37578f6602fdabc2084b664f`;
+  GitHub reports its `verify` check passed. The PR remains open and the preview gate waits for an
+  independent current-head approval.
 - [x] Fixture-only recovery and provenance regressions: an observed PR completes a pending create
   only when its URL matches the URL returned by that create; an older matching PR cannot complete
   a create command that failed before returning a URL. A forged `worktree_commits` field in the UI
