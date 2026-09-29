@@ -290,6 +290,32 @@ impl WorktreeManager {
         })
     }
 
+    pub fn ensure_file_scope_available(&self, run_id: RunId, paths: &[String]) -> Result<()> {
+        let normalized = paths
+            .iter()
+            .map(|path| normalize_scope_path(path))
+            .collect::<Result<Vec<_>>>()?;
+        if normalized.is_empty() {
+            bail!("at least one file path must be checked");
+        }
+        self.ledger.with_connection(|connection| {
+            let mut statement = connection
+                .prepare("SELECT agent_id, path FROM file_reservations WHERE run_id = ?1")?;
+            let rows = statement.query_map([run_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let existing = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            for path in &normalized {
+                for (owner, claimed_path) in &existing {
+                    if scopes_overlap(path, claimed_path) {
+                        bail!("file scope '{path}' overlaps a scope owned by agent {owner}");
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
     pub fn recovery_issues(&self) -> Result<Vec<RecoveryIssue>> {
         self.ledger.with_connection(|connection| {
             let mut statement = connection.prepare(
@@ -565,7 +591,7 @@ impl WorktreeManager {
         Ok(())
     }
 
-    fn integration_worktree(&self, run_id: RunId) -> Result<Worktree> {
+    pub fn integration_worktree(&self, run_id: RunId) -> Result<Worktree> {
         self.find_worktree_by_run_role(run_id, "integration")?
             .ok_or_else(|| anyhow!("run {run_id} has no integration worktree"))
     }
@@ -575,7 +601,7 @@ impl WorktreeManager {
             .ok_or_else(|| anyhow!("agent {agent_id} has no worktree for run {run_id}"))
     }
 
-    fn get_worktree(&self, id: WorktreeId) -> Result<Worktree> {
+    pub fn get_worktree(&self, id: WorktreeId) -> Result<Worktree> {
         self.ledger.with_connection(|connection| {
             connection
                 .query_row(
@@ -846,7 +872,7 @@ fn git_common_dir(root: &Path) -> Result<PathBuf> {
         .with_context(|| format!("canonicalizing Git common directory at {}", path.display()))
 }
 
-fn normalize_scope_path(path: &str) -> Result<String> {
+pub(crate) fn normalize_scope_path(path: &str) -> Result<String> {
     if path.is_empty()
         || path.contains('\0')
         || path.contains('\\')

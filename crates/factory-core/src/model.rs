@@ -8,13 +8,21 @@ use uuid::Uuid;
 
 macro_rules! uuid_id {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+        #[derive(
+            Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+        )]
         #[serde(transparent)]
         pub struct $name(pub Uuid);
 
         impl $name {
             pub fn new() -> Self {
                 Self(Uuid::new_v4())
+            }
+        }
+
+        impl From<Uuid> for $name {
+            fn from(value: Uuid) -> Self {
+                Self(value)
             }
         }
 
@@ -30,6 +38,8 @@ uuid_id!(RepoId);
 uuid_id!(RunId);
 uuid_id!(AgentId);
 uuid_id!(WorktreeId);
+uuid_id!(SliceId);
+uuid_id!(MessageId);
 
 const MAX_OUTPUT_CHARS: usize = 16_000;
 
@@ -120,6 +130,94 @@ pub struct RecoveryIssue {
     pub detail: String,
     pub recorded_at_ms: i64,
     pub resolved_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    Question,
+    Answer,
+    Handoff,
+    Contract,
+    Blocker,
+    Completion,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "agent_id", rename_all = "snake_case")]
+pub enum MessageRecipient {
+    Manager,
+    Agent(AgentId),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentMessage {
+    pub id: MessageId,
+    pub run_id: RunId,
+    pub from: MessageRecipient,
+    pub to: MessageRecipient,
+    pub kind: MessageKind,
+    pub body: String,
+    pub contract_key: Option<String>,
+    pub contract_version: Option<u32>,
+    pub created_at_ms: i64,
+    pub acknowledged_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceStatus {
+    Preparing,
+    WaitingForContract,
+    Queued,
+    Paused,
+    Blocked,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SliceAssignment {
+    pub id: SliceId,
+    pub run_id: RunId,
+    pub assignment_key: String,
+    pub objective: String,
+    pub acceptance_evidence: String,
+    pub allowed_paths: Vec<String>,
+    pub dependency_ids: Vec<SliceId>,
+    pub contract_keys: Vec<String>,
+    pub agent_id: AgentId,
+    pub worktree_id: Option<WorktreeId>,
+    pub status: SliceStatus,
+    pub blocked_reason: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractStatus {
+    Proposed,
+    Conflicted,
+    Resolved,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ContractDecision {
+    pub run_id: RunId,
+    pub key: String,
+    pub version: u32,
+    pub body: String,
+    pub status: ContractStatus,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct AssignSliceRequest {
+    pub run_id: RunId,
+    pub assignment_key: String,
+    pub objective: String,
+    pub allowed_paths: Vec<String>,
+    pub dependency_ids: Vec<SliceId>,
+    pub contract_keys: Vec<String>,
+    pub acceptance_evidence: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

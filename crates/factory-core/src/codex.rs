@@ -1,3 +1,4 @@
+use crate::mcp::FactoryMcpConfig;
 use crate::{Event, EventKind, Ledger, RedactedOutput, SessionId, SessionProcessState};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -69,6 +70,29 @@ impl CodexRunner {
         };
         let mut command = Command::new(executable);
         command.args(["app-server", "--stdio"]);
+        Self::start_with_command(command, cwd, ledger, session_id)
+    }
+
+    /// Starts a manager/worker App Server with this task's temporary Factory MCP overrides.
+    /// The overrides are CLI arguments and leave the user's persistent Codex config untouched.
+    pub fn start_with_factory_mcp(
+        cwd: &Path,
+        ledger: Arc<Ledger>,
+        session_id: SessionId,
+        config: FactoryMcpConfig,
+    ) -> Result<Self> {
+        let executable = match resolve_codex_binary() {
+            Ok(executable) => executable,
+            Err(error) => {
+                record_start_failure(&ledger, session_id, &error.to_string())?;
+                return Err(error);
+            }
+        };
+        let mut command = Command::new(executable);
+        command.args(["app-server", "--stdio"]);
+        for override_value in config.config_overrides()? {
+            command.arg("--config").arg(override_value);
+        }
         Self::start_with_command(command, cwd, ledger, session_id)
     }
 

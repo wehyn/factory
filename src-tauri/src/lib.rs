@@ -1,7 +1,7 @@
 use anyhow::Context;
 use factory_core::{
-    CodexRunner, Event, EventKind, FactorySnapshot, Ledger, RedactedOutput, SessionId,
-    WorktreeManager,
+    CodexRunner, Event, EventKind, FactoryMcpConfig, FactorySnapshot, Ledger, Mailbox,
+    RedactedOutput, SessionId, WorktreeManager,
 };
 use std::{
     path::{Path, PathBuf},
@@ -20,6 +20,8 @@ const DEFAULT_PROMPT_MAX_CHARS: usize = 16_000;
 
 struct AppState {
     ledger: Arc<Ledger>,
+    ledger_path: PathBuf,
+    worktree_root: PathBuf,
     disposable_repo: PathBuf,
     runner: Mutex<Option<CodexRunner>>,
 }
@@ -92,10 +94,17 @@ fn start_disposable_session(
         .append(&Event::new(session_id, EventKind::SessionCreated))
         .map_err(safe_error)?;
 
-    let mut runner = CodexRunner::start(
+    let mcp_config = FactoryMcpConfig::manager(
+        std::env::current_exe().map_err(|error| safe_error(anyhow::anyhow!(error)))?,
+        state.ledger_path.clone(),
+        state.worktree_root.clone(),
+    )
+    .with_args(vec!["--factory-mcp".to_owned()]);
+    let mut runner = CodexRunner::start_with_factory_mcp(
         &state.disposable_repo,
         Arc::clone(&state.ledger),
         session_id,
+        mcp_config,
     )
     .map_err(safe_error)?;
     if let Err(error) = runner.start_turn(prompt) {
@@ -155,8 +164,11 @@ fn initialize_app_state(app: &mut tauri::App) -> anyhow::Result<AppState> {
     // No child process survives a service restart. Record that recovery before the webview
     // can request its first snapshot, so persisted start events are never exposed as live.
     ledger.recover_unfinished_sessions()?;
-    let worktrees = WorktreeManager::new((*ledger).clone(), app_data_dir.join("worktrees"))?;
+    let ledger_path = app_data_dir.join("events.sqlite");
+    let worktree_root = app_data_dir.join("worktrees");
+    let worktrees = WorktreeManager::new((*ledger).clone(), worktree_root.clone())?;
     worktrees.reconcile()?;
+    Mailbox::new((*ledger).clone(), worktrees.clone()).reconcile_interrupted_assignments()?;
     let disposable_repo = prepare_disposable_repo(&app_data_dir)?;
 
     let event_receiver = ledger.subscribe()?;
@@ -171,6 +183,8 @@ fn initialize_app_state(app: &mut tauri::App) -> anyhow::Result<AppState> {
 
     Ok(AppState {
         ledger,
+        ledger_path,
+        worktree_root,
         disposable_repo,
         runner: Mutex::new(None),
     })

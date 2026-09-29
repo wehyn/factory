@@ -78,7 +78,82 @@ impl Ledger {
                 resolved_at_ms INTEGER
             );
             CREATE INDEX IF NOT EXISTS recovery_issues_by_worktree
-                ON recovery_issues(worktree_id, resolved_at_ms);",
+                ON recovery_issues(worktree_id, resolved_at_ms);
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                from_kind TEXT NOT NULL,
+                from_agent_id TEXT,
+                to_kind TEXT NOT NULL,
+                to_agent_id TEXT,
+                kind TEXT NOT NULL,
+                body TEXT NOT NULL,
+                contract_key TEXT,
+                contract_version INTEGER,
+                created_at_ms INTEGER NOT NULL,
+                acknowledged_at_ms INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS agent_messages_inbox
+                ON agent_messages(run_id, to_kind, to_agent_id, acknowledged_at_ms, created_at_ms);
+            CREATE TABLE IF NOT EXISTS slice_assignments (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                assignment_key TEXT NOT NULL,
+                objective TEXT NOT NULL,
+                acceptance_evidence TEXT NOT NULL,
+                allowed_paths_json TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                worktree_id TEXT REFERENCES worktrees(id),
+                status TEXT NOT NULL,
+                blocked_reason TEXT,
+                created_at_ms INTEGER NOT NULL,
+                UNIQUE(id, run_id),
+                UNIQUE(run_id, assignment_key),
+                UNIQUE(run_id, agent_id)
+            );
+            CREATE INDEX IF NOT EXISTS slice_assignments_by_run
+                ON slice_assignments(run_id, created_at_ms);
+            CREATE TABLE IF NOT EXISTS slice_dependencies (
+                slice_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                dependency_slice_id TEXT NOT NULL,
+                PRIMARY KEY(slice_id, dependency_slice_id),
+                FOREIGN KEY(slice_id, run_id) REFERENCES slice_assignments(id, run_id),
+                FOREIGN KEY(dependency_slice_id, run_id) REFERENCES slice_assignments(id, run_id)
+            );
+            CREATE TABLE IF NOT EXISTS slice_contracts (
+                slice_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                contract_key TEXT NOT NULL,
+                PRIMARY KEY(slice_id, contract_key),
+                FOREIGN KEY(slice_id, run_id) REFERENCES slice_assignments(id, run_id)
+            );
+            CREATE TABLE IF NOT EXISTS contract_decisions (
+                run_id TEXT NOT NULL,
+                contract_key TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(run_id, contract_key)
+            );
+            CREATE TABLE IF NOT EXISTS contract_versions (
+                run_id TEXT NOT NULL,
+                contract_key TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source_message_id TEXT,
+                created_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(run_id, contract_key, version)
+            );
+            CREATE TABLE IF NOT EXISTS mcp_tool_invocations (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool_name TEXT NOT NULL,
+                principal_kind TEXT NOT NULL,
+                agent_id TEXT,
+                invoked_at_ms INTEGER NOT NULL
+            );",
         )?;
 
         Ok(Self {
