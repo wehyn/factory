@@ -66,7 +66,7 @@ The roadmap IDs below refer to `outputs/agentic-factory-implementation-plan.md`;
 - Status: COMPLETE
 - Acceptance: manager-only assignment validates run, dependencies, file scope, and worktree; directed messages persist and deliver once; contract decisions are versioned and conflicts stop dependent work; a harmless App Server turn invokes scoped factory MCP tools without mutating global Codex configuration.
 - Verification evidence: `cargo test -p factory-core` passed (33 passed, two live tests ignored by default); the scoped MCP App Server probe passed explicitly on `codex-cli 0.157.0` and confirmed global Codex config metadata was unchanged. `cargo check --workspace`, `cargo fmt --all -- --check`, and `git diff --check` passed. Message delivery, acknowledgements, manager-only assignment, dependency/scope validation, contract conflict pausing/resolution, principal-specific tool exposure, and stdio handshake are covered.
-- Commit: pending
+- Commit: d152233 (`feat: route agent handoffs`)
 
 ### Roadmap Task 6: Dependency scheduler and integration gate (R6)
 
