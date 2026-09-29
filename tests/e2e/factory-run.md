@@ -133,6 +133,10 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
 - [ ] Start an active run and a merged-run production watch. Close the main window; confirm the
   window hides while the app PID and worker state remain active. Reopen from the tray and confirm
   the same run/session state appears.
+- Partial observation (2026-09-29): after invoking the preview window's close control, CUA could
+  no longer retrieve its accessibility tree, while the packaged preview process remained live as
+  PID `18941`. This did not include an active worker, a merged-run production watch, or a verified
+  tray reopen, so the acceptance item remains unchecked.
 - [ ] Quit the app from the tray. Confirm the Rust service and supervised children exit, and the
   persistent ledger records that monitoring stopped.
 - [ ] Relaunch the app. Confirm event and alert recovery, a visible report of any monitoring gap,
