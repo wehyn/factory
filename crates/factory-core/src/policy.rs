@@ -163,6 +163,7 @@ pub struct PullRequestEvidence {
     pub independent_review: Vec<String>,
     pub decisions: Vec<String>,
     pub limitations: Vec<String>,
+    #[serde(default)]
     pub worktree_commits: Vec<String>,
 }
 

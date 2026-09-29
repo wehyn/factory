@@ -6,44 +6,67 @@ step complete based on a fake CLI, unit test, or a code review.
 ## Evidence record
 
 - Date and operator: 2026-09-29 / Codex local run
-- App build / commit: `Agentic Factory Preview` debug bundle (`dev.wayne.agenticfactory.preview`), source commit `99528a4` pushed to `wehyn/factory` `main`
+- App build / commit: `Agentic Factory Preview` debug bundle (`dev.wayne.agenticfactory.preview`), built from a worktree based on `origin/main` commit `1aaac39` with the PR-payload and receipt-recovery changes below
 - macOS version: 27.0
 - Codex CLI version: 0.157.0
 - GitHub CLI version and authentication status (never record credentials): 2.101.0; authenticated to github.com (credentials omitted)
-- Disposable repository A and commit: not selected; `wehyn/factory` is the public project repository, not a disposable test target
-- Disposable repository B and commit: not selected; `wehyn/factory` is the public project repository, not a disposable test target
+- Disposable repository A and setup commit: private [`wehyn/factory-e2e-a`](https://github.com/wehyn/factory-e2e-a), `main` at `688e778c1ab7cc3c3aa0bf9935b044b51c07c290`; initial README commit `141d26124b855ed08e577248bb946940765f8d3d`, setup commit `b46881653daa357a558700d3a24ef4d31d3a6164`
+- Disposable repository B and setup commit: private [`wehyn/factory-e2e-b`](https://github.com/wehyn/factory-e2e-b), `main` at `321da94467096a815065b4d3d376becdc4259173`; initial README commit `ae01287a43060f71acc88612a984f3dab50f50f9`, setup commit `7307d1e053fe4292d82ac7931ffb88d06ebf65e9`
+- GitHub account: `wehyn`; current account has no independent collaborator on either disposable repo
+- Isolated preview app PID: `46647`; bundle ID `dev.wayne.agenticfactory.preview`
 - Production test environment ID: not configured
 - Screenshots or log paths: `/tmp/agentic-factory-preview-final.png`; bundle at `target/debug/bundle/macos/Agentic Factory Preview.app`
 
 ## Prepare disposable repositories
 
-- [ ] Create two empty disposable repositories with distinct GitHub remotes and a committed
-  `main` branch. Do not point the app at a user project.
-- [ ] Register both repositories in Agentic Factory. Confirm their canonical roots and remotes.
-- [ ] Add a valid `.agentic-factory.json` to each repository. Use distinct `production.environment_id`
-  values, HTTPS deployment identity URLs, a smoke URL, and a short timeout.
-- [ ] Configure GitHub checks and the docs-only auto-merge allowlist on the repository used for
-  low-risk merge acceptance. Leave automatic merging disabled in any other repository.
-- [ ] Start the app and record the app PID and manager session ID.
+- [x] Create two private disposable repositories with distinct GitHub remotes and committed
+  `main` branches. Do not point the app at a user project.
+- [x] Register both repositories in the isolated preview app and confirm their canonical roots.
+- [ ] Add a production policy to each repo with distinct `production.environment_id` values,
+  HTTPS deployment identity URLs, a smoke URL, and a short timeout.
+- [x] Configure the app's `verify` required check and docs-only auto-merge allowlist in both
+  repositories. Automatic merging remains disabled until live review and production evidence are
+  available. GitHub branch-protection API returned 403 because this account plan does not enable
+  branch protection on private repositories. Both workflow checkouts use `fetch-depth: 0` so the
+  base commit is available to `git diff --check`.
+- [x] Start the isolated preview app (PID `11107`) and create one run per repository. Run A is
+  `4ed97579-9a7d-4868-86af-20130e8a0ece`, integration branch
+  `factory/run-4ed97579-9a7d-4868-86af-20130e8a0ece`; run B is
+  `1be942e4-2d2b-4704-a764-1f0d879f154f`, integration branch
+  `factory/run-1be942e4-2d2b-4704-a764-1f0d879f154f`. The two runs are linked in the ledger.
 
 ## Concurrent linked runs and worker isolation
 
-- [ ] Create one run in each repository and link the two runs from the workspace.
-- [ ] Ask the single manager conversation to split the work into non-overlapping changes in both
-  repositories. Confirm separate integration worktrees and exclusive builder worktrees.
-- [ ] Start independent slices in both runs. Confirm both live CLI sessions appear on the canvas,
-  each builder's output and branch belong to its run, and a directed handoff arrow shows the
-  sender and recipient.
-- [ ] Confirm workers produce real Codex output and completion evidence. Record the run IDs,
-  worktree paths, branch names, source commit SHAs, integration SHAs, and App Server thread IDs.
-- [ ] Refresh the app snapshot and confirm the same sessions, messages, and worktree inventory are
-  restored without starting duplicate workers.
+- [x] Create one run in each repository and link the two runs from the workspace.
+- [x] Split work into non-overlapping docs-only changes in the two repositories. The UI showed
+  separate integration worktrees and exclusive builder worktrees.
+- [x] Start one builder per run. Both outputs, branches, and directed handoffs appeared on the
+  canvas. Run B completed and integrated; run A's manager completion call was rejected and the
+  dirty worker worktree was preserved as a recovery blocker.
+- [x] Record run IDs, integration branches, source/integration commits, worker IDs, and worktree
+  paths below. The packaged preview restart restored the same runs and messages without launching
+  duplicate workers.
+
+Run A: `4ed97579-9a7d-4868-86af-20130e8a0ece`; worker
+`e0bb3f49-28b5-4c20-95e6-beb0e29bde68`; assigned slice
+`8dbad657-58e8-4edd-adb5-f43376876bf8`; integration branch
+`factory/run-4ed97579-9a7d-4868-86af-20130e8a0ece`. Its worker created only
+`docs/acceptance-a.md` with `FACTORY_E2E_FAIL`; Factory did not record a source commit and now
+reports the dirty worker tree as needing manager recovery.
+
+Run B: `1be942e4-2d2b-4704-a764-1f0d879f154f`; worker
+`7ebe9709-2454-40f4-a6c5-ea07f85bc11c`; source commit
+`2febb2a61edc12aa4f3093f7eb57f8c2160d5e7f`; integration branch
+`factory/run-1be942e4-2d2b-4704-a764-1f0d879f154f`; integration commit
+`ebf6334db7e23777ea49af5f2876fdfefb19f7b1`. Its only file change is `docs/acceptance-b.md`.
 
 ## GitHub gate and durable action receipts
 
 Run these cases on disposable pull requests; record the PR number and head SHA for every case.
 
-- [ ] Refresh a PR with a pending or failed required check. The gate blocks it.
+- [x] Refresh a PR while the `verify` check is failed. The app blocks merge; after the workflow
+  checkout fix, the same PR's check passes and the gate advances to the independent-review
+  requirement.
 - [ ] Push a new commit after checks pass. Refresh the PR; stale checks and an approval from the
   previous head cannot authorize a merge.
 - [ ] Change a permission, migration, deployment/workflow, secret, privacy, security, or public API
@@ -54,9 +77,14 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
   head SHA, then refresh and verify the merged commit SHA.
 - [ ] Repeat the same create/merge action key through a fixture or controlled retry. Confirm the
   ledger returns the original receipt and GitHub receives no duplicate action.
-- [ ] Create a pull request from an integrated run. Confirm the app publishes only that run's
-  integration branch and the PR body includes stored verification, review, decision, limitation,
-  and worktree/commit provenance.
+- [x] Create a pull request from the integrated run. The app published only run B's integration
+  branch and the PR body included verification, review, decision, limitation, and commit/worktree
+  provenance. The app recorded PR #1 at head
+  `ebf6334db7e23777ea49af5f2876fdfefb19f7b1`; `verify` passed in run
+  `36559445822`. The PR remains open because no independent current-head approval is available.
+- [x] Recover the interrupted PR-creation receipt: after a successful live refresh of PR #1, the
+  ledger action `create-pr:1be942e4-2d2b-4704-a764-1f0d879f154f` is `completed` with a stored
+  result. A regression test confirms retrying that key does not create a second PR.
 
 ## Production watch
 
@@ -99,7 +127,8 @@ git diff --check
 ```
 
 - [x] Review the isolated preview app and rendered workspace at 2160×1440. Its bundle ID is `dev.wayne.agenticfactory.preview`; the installed `Agentic Factory` app was left untouched.
-- [ ] Record every live PR head/check state and deployment observation used above.
+- [ ] Record live deployment observations; none were available because production identity and
+  smoke endpoints are not configured. PR head/check evidence is recorded above.
 - [x] List skipped steps and why. This product is not production-ready until the real Codex,
   GitHub, production watch, and process-lifecycle evidence above has been recorded.
 
@@ -107,16 +136,21 @@ git diff --check
 
 This implementation run verifies the merge path against a fake `gh` executable, production
 outcomes against a fake `curl` executable, durable SQLite recovery, workspace builds, and a
-packaged Tauri build. The isolated preview app was reviewed at 2160×1440. The three normally
+packaged Tauri build. Fresh verification passed `cargo fmt --all -- --check`, `cargo test --workspace`
+(73 passed, 3 ignored), `npm test -- --run` (4 passed), and `git diff --check`; the isolated preview
+app rebuilt successfully and was reviewed at 2160×1440. The three normally
 ignored App Server/MCP/parallel-worker integration cases were run individually and passed.
 
 Skipped live steps and why:
 
-- Two disposable repositories, real PR check/merge cases, and duplicate-action retries: `origin`
-  is configured to the public project repository `wehyn/factory`, which is not a disposable test
-  target. No disposable repositories were selected, and no live PR or merge was performed.
-- Matching deployment identity, failing smoke check, and live alert recovery: no production test
-  environment or identity/smoke endpoints are configured.
+- Independent current-head approval and a successful merge: only the `wehyn` account is present on
+  both private disposable repos, so this account cannot supply the independent review the gate
+  requires. The gate will not be bypassed to manufacture a merge receipt.
+- Run A source-commit recording and integration: the manager completion operation rejected the
+  completed worker's assignment, and restart recovery preserved its dirty worktree and marked the
+  run as needing manager recovery.
+- Production identity, matching merge SHA, failing smoke check, and live alert recovery: no
+  production test environment or identity/smoke endpoints are configured.
 - Active-run close/reopen/restart against the final packaged bundle with production monitoring:
   local lifecycle primitives have prior evidence, but this combined release acceptance has not
   been run.

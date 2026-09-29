@@ -293,6 +293,7 @@ pub fn evaluate_pull_request_gate(
     );
     let record = record_with_gate(run, repository, state, gate);
     ledger.store_pull_request(&record)?;
+    complete_observed_create_action(ledger, &record)?;
     Ok(record)
 }
 
@@ -470,6 +471,20 @@ fn record_with_gate(
         state,
         gate: Some(gate),
     }
+}
+
+fn complete_observed_create_action(ledger: &Ledger, record: &PullRequestRecord) -> Result<()> {
+    let idempotency_key = format!("create-pr:{}", record.run_id);
+    let Some(action) = ledger.github_action(&idempotency_key)? else {
+        return Ok(());
+    };
+    if action.run_id != record.run_id || action.action_kind != "create_pull_request" {
+        bail!("GitHub idempotency key belongs to a different action");
+    }
+    if !action.completed {
+        ledger.complete_github_action(&idempotency_key, &serde_json::to_string(record)?)?;
+    }
+    Ok(())
 }
 
 fn ensure_run_repository(run: &RunRecord, repository: &Repository) -> Result<()> {

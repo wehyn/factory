@@ -6,6 +6,126 @@ use factory_core::{
 use std::{os::unix::fs::PermissionsExt, path::Path};
 
 #[test]
+fn ui_pr_evidence_payload_defaults_server_owned_provenance() -> anyhow::Result<()> {
+    let evidence: PullRequestEvidence = serde_json::from_value(serde_json::json!({
+        "change_summary": "Add acceptance notes",
+        "verification": ["git diff --check passed"],
+        "independent_review": [],
+        "decisions": [],
+        "limitations": []
+    }))?;
+
+    assert_eq!(evidence.change_summary, "Add acceptance notes");
+    assert_eq!(evidence.verification, ["git diff --check passed"]);
+    assert!(evidence.worktree_commits.is_empty());
+    Ok(())
+}
+
+#[test]
+fn refreshing_resolves_a_started_create_pr_action_after_observation_failure() -> anyhow::Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let database = temp.path().join("ledger.sqlite");
+    let executable = temp.path().join("gh");
+    let checks_count = temp.path().join("checks-count");
+    let create_count = temp.path().join("create-count");
+    let head = "a".repeat(40);
+    write_fake_gh_with_transient_check_failure(&executable, &checks_count, &create_count, &head)?;
+
+    let repo_id = RepoId::new();
+    let repository = Repository {
+        id: repo_id,
+        canonical_root: temp.path().to_path_buf(),
+        remote_url: Some("https://github.com/example/repo.git".to_owned()),
+        default_branch: "main".to_owned(),
+        registered_at_ms: 1,
+    };
+    let run = RunRecord {
+        id: RunId::new(),
+        repo_id,
+        title: "Update documentation".to_owned(),
+        base_sha: "b".repeat(40),
+        created_at_ms: 2,
+    };
+    let ledger = Ledger::open(&database)?;
+    let connection = rusqlite::Connection::open(&database)?;
+    connection.execute(
+        "INSERT INTO repositories(id, canonical_root, remote_url, default_branch, registered_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            repository.id.to_string(),
+            repository.canonical_root.to_string_lossy(),
+            repository.remote_url,
+            repository.default_branch,
+            repository.registered_at_ms,
+        ],
+    )?;
+    drop(connection);
+    ledger.register_run_record(&run)?;
+    ledger.store_pull_request_evidence(
+        run.id,
+        &PullRequestEvidence {
+            change_summary: "Update docs".to_owned(),
+            verification: vec!["git diff --check passed".to_owned()],
+            ..PullRequestEvidence::default()
+        },
+    )?;
+
+    let client = GitHubCli::with_executable(executable);
+    let idempotency_key = format!("create-pr:{}", run.id);
+    let expected_head = ExpectedPullRequestHead {
+        head_branch: "factory/run-1".to_owned(),
+        base_branch: "main".to_owned(),
+        head_sha: head,
+    };
+    let policy = RepositoryPolicy::default();
+
+    let failed_creation = create_pull_request(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &expected_head,
+        &idempotency_key,
+    );
+    assert!(failed_creation.is_err());
+    assert!(
+        !ledger
+            .github_action(&idempotency_key)?
+            .expect("create action should have been reserved")
+            .completed
+    );
+
+    let refreshed = evaluate_pull_request_gate(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &policy,
+        &expected_head,
+        99,
+    )?;
+    assert!(
+        ledger
+            .github_action(&idempotency_key)?
+            .expect("create action should remain recorded")
+            .completed
+    );
+
+    let retried_creation = create_pull_request(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &expected_head,
+        &idempotency_key,
+    )?;
+    assert_eq!(retried_creation, refreshed);
+    assert_eq!(std::fs::read_to_string(create_count)?, "1");
+    Ok(())
+}
+
+#[test]
 fn mismatched_pr_does_not_block_intended_creation_and_actions_remain_idempotent(
 ) -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
@@ -263,6 +383,51 @@ esac
         .replace("BODY_PATH_VALUE", &body_path.display().to_string())
         .replace("HEAD_SHA", head)
         .replace("MERGE_SHA", merge_sha);
+    std::fs::write(path, script)?;
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+fn write_fake_gh_with_transient_check_failure(
+    path: &Path,
+    checks_count: &Path,
+    create_count: &Path,
+    head: &str,
+) -> anyhow::Result<()> {
+    let script = r##"#!/bin/sh
+set -eu
+CHECKS_COUNT='CHECKS_COUNT_PATH'
+CREATE_COUNT='CREATE_COUNT_PATH'
+case "$4" in
+  create)
+    count=0
+    if [ -f "$CREATE_COUNT" ]; then count=$(cat "$CREATE_COUNT"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$CREATE_COUNT"
+    printf '%s' 'https://github.com/example/repo/pull/99'
+    ;;
+  view)
+    printf '%s' '{"number":99,"url":"https://github.com/example/repo/pull/99","title":"Fixture","state":"OPEN","isDraft":false,"headRefName":"factory/run-1","baseRefName":"main","headRefOid":"HEAD_SHA","baseRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","author":{"login":"wehyn"},"latestReviews":[],"mergeCommit":null}'
+    ;;
+  checks)
+    count=0
+    if [ -f "$CHECKS_COUNT" ]; then count=$(cat "$CHECKS_COUNT"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$CHECKS_COUNT"
+    if [ "$count" = "1" ]; then exit 8; fi
+    printf '%s' '[{"name":"verify","state":"SUCCESS","bucket":"pass"}]'
+    ;;
+  diff)
+    printf '%s' 'diff --git a/docs/guide.md b/docs/guide.md'
+    ;;
+  *) exit 2 ;;
+esac
+"##
+    .replace("CHECKS_COUNT_PATH", &checks_count.display().to_string())
+    .replace("CREATE_COUNT_PATH", &create_count.display().to_string())
+    .replace("HEAD_SHA", head);
     std::fs::write(path, script)?;
     let mut permissions = std::fs::metadata(path)?.permissions();
     permissions.set_mode(0o700);
