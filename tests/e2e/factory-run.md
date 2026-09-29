@@ -74,6 +74,13 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
   in run `36566050494`, and the preview app refreshed PR #1 against the new head. No approval
   existed on the previous head, so approval invalidation remains unverified and this item stays
   unchecked.
+- Follow-up provenance probe: a second docs-only commit,
+  `63f81016c8e8a7a8aed0c1c06e81aa30d4c3c160`, advanced the same disposable PR branch after the
+  earlier check completed. GitHub `verify` passed for it in run `36567066613`. Refreshing PR #1 in
+  the preview app showed `pull request head commit does not match this run's integration commit`.
+  This confirms that a passing check cannot authorize a remote head the run did not record. It does
+  not test stale-check invalidation for a Factory-authored integration commit or approval
+  invalidation, so this item remains unchecked.
 - [ ] Change a permission, migration, deployment/workflow, secret, privacy, security, or public API
   surface. The gate waits for Wayne even when checks pass.
 - [ ] Make a small docs-only change with every configured check passing and an independent review
@@ -90,9 +97,10 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
 - [x] Recover the interrupted PR-creation receipt: after a successful live refresh of PR #1, the
   ledger action `create-pr:1be942e4-2d2b-4704-a764-1f0d879f154f` is `completed` with a stored
   result. A regression test confirms retrying that key does not create a second PR.
-- Current PR #1 head after the follow-up probe is `7bec48bc514f01ae37578f6602fdabc2084b664f`;
-  GitHub reports its `verify` check passed. The PR remains open and the preview gate waits for an
-  independent current-head approval.
+- Current PR #1 head after the follow-up probes is
+  `63f81016c8e8a7a8aed0c1c06e81aa30d4c3c160`; GitHub reports `verify` passed for that SHA. The
+  PR remains open, and the preview gate refuses the externally advanced head because it differs
+  from the run's recorded integration commit.
 - [x] Fixture-only recovery and provenance regressions: an observed PR completes a pending create
   only when its URL matches the URL returned by that create; an older matching PR cannot complete
   a create command that failed before returning a URL. A forged `worktree_commits` field in the UI
@@ -163,7 +171,9 @@ Skipped live steps and why:
 
 - Independent current-head approval and a successful merge: only the `wehyn` account is present on
   both private disposable repos, so this account cannot supply the independent review the gate
-  requires. The gate will not be bypassed to manufacture a merge receipt.
+  requires. The gate will not be bypassed to manufacture a merge receipt. The follow-up remote
+  head probe also leaves PR #1 mismatched with Factory's recorded integration commit; its passing
+  GitHub check is not sufficient to make the PR eligible.
 - Run A source-commit recording and integration: the manager completion operation rejected the
   completed worker's assignment, and restart recovery preserved its dirty worktree and marked the
   run as needing manager recovery.
