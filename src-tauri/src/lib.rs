@@ -1,13 +1,17 @@
 use anyhow::Context;
 use factory_core::{
-    CodexRunner, Event, EventKind, FactoryMcpConfig, FactorySnapshot, Ledger, Mailbox,
-    RedactedOutput, SessionId, WorktreeManager,
+    CodexRunner, CodexWorkerLauncher, Event, EventKind, FactoryMcpConfig, FactorySnapshot, Ledger,
+    Mailbox, RedactedOutput, Scheduler, SessionId, WorktreeManager,
 };
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
+    time::Duration,
 };
 use tauri::{
     menu::{Menu, MenuItem},
@@ -24,10 +28,20 @@ struct AppState {
     worktree_root: PathBuf,
     disposable_repo: PathBuf,
     runner: Mutex<Option<CodexRunner>>,
+    scheduler: Scheduler,
+    scheduler_monitor_stop: Arc<AtomicBool>,
+    scheduler_monitor: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl AppState {
     fn shutdown(&self) {
+        self.scheduler_monitor_stop.store(true, Ordering::SeqCst);
+        if let Ok(mut monitor) = self.scheduler_monitor.lock() {
+            if let Some(monitor) = monitor.take() {
+                let _ = monitor.join();
+            }
+        }
+        let _ = self.scheduler.shutdown();
         if let Ok(mut runner) = self.runner.lock() {
             if let Some(runner) = runner.as_mut() {
                 let _ = runner.shutdown();
@@ -169,6 +183,18 @@ fn initialize_app_state(app: &mut tauri::App) -> anyhow::Result<AppState> {
     let worktrees = WorktreeManager::new((*ledger).clone(), worktree_root.clone())?;
     worktrees.reconcile()?;
     Mailbox::new((*ledger).clone(), worktrees.clone()).reconcile_interrupted_assignments()?;
+    let mcp_binary = std::env::current_exe()?;
+    let worker_launcher = CodexWorkerLauncher::new(
+        Arc::clone(&ledger),
+        &worktrees,
+        mcp_binary,
+        vec!["--factory-mcp".to_owned()],
+    );
+    let scheduler = Scheduler::new(Arc::clone(&ledger), worktrees, Arc::new(worker_launcher));
+    scheduler.reconcile_after_restart()?;
+    let scheduler_monitor_stop = Arc::new(AtomicBool::new(false));
+    let stop_monitor = Arc::clone(&scheduler_monitor_stop);
+    let monitor_scheduler = scheduler.clone();
     let disposable_repo = prepare_disposable_repo(&app_data_dir)?;
 
     let event_receiver = ledger.subscribe()?;
@@ -181,12 +207,31 @@ fn initialize_app_state(app: &mut tauri::App) -> anyhow::Result<AppState> {
             }
         })?;
 
+    let scheduler_monitor = thread::Builder::new()
+        .name("factory-worker-scheduler".to_owned())
+        .spawn(move || {
+            while !stop_monitor.load(Ordering::SeqCst) {
+                if let Err(error) = monitor_scheduler.poll_workers() {
+                    let safe = RedactedOutput::new(error.to_string());
+                    eprintln!("worker monitor: {}", safe.as_str());
+                }
+                if let Err(error) = monitor_scheduler.dispatch_all_ready() {
+                    let safe = RedactedOutput::new(error.to_string());
+                    eprintln!("worker scheduler: {}", safe.as_str());
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+        })?;
+
     Ok(AppState {
         ledger,
         ledger_path,
         worktree_root,
         disposable_repo,
         runner: Mutex::new(None),
+        scheduler,
+        scheduler_monitor_stop,
+        scheduler_monitor: Mutex::new(Some(scheduler_monitor)),
     })
 }
 

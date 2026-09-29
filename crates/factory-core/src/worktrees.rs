@@ -44,6 +44,31 @@ impl WorktreeManager {
         Ok(Self { ledger, root })
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Runs an integration or inspection operation while holding the worktree's cross-process
+    /// lock and after confirming that its registered Git identity is still safe.
+    pub fn with_exclusive_worktree<T>(
+        &self,
+        worktree_id: WorktreeId,
+        operation: impl FnOnce(&Worktree, WorktreeStatus) -> Result<T>,
+    ) -> Result<T> {
+        let Some(_lock) = self.try_worktree_lock(worktree_id)? else {
+            bail!("worktree has another operation in progress");
+        };
+        let worktree = self.get_worktree(worktree_id)?;
+        if worktree.state != WorktreeState::Active {
+            bail!("worktree is not active");
+        }
+        let status = self.inspect_worktree_locked(worktree_id)?;
+        match status {
+            WorktreeStatus::Clean | WorktreeStatus::Dirty => operation(&worktree, status),
+            _ => bail!("worktree requires manager recovery"),
+        }
+    }
+
     pub fn create_run_worktree(
         &self,
         repo_id: RepoId,
@@ -72,6 +97,92 @@ impl WorktreeManager {
             WorktreeRole::Agent(agent_id),
             base_sha,
         )
+    }
+
+    /// Moves an unused clean agent worktree to the current integration commit. This makes a
+    /// dependent slice see the already integrated outputs of its prerequisites. The method only
+    /// resets a branch when its HEAD still equals its recorded base; a branch with commits is
+    /// preserved for manager review.
+    pub fn advance_clean_agent_worktree_to_integration(
+        &self,
+        agent_worktree_id: WorktreeId,
+    ) -> Result<Worktree> {
+        let agent = self.get_worktree(agent_worktree_id)?;
+        if !matches!(agent.role, WorktreeRole::Agent(_)) {
+            bail!("only an agent worktree can be advanced to integration");
+        }
+        let integration = self.integration_worktree(agent.run_id)?;
+        if integration.repo_id != agent.repo_id {
+            bail!("agent and integration worktrees belong to different repositories");
+        }
+        let (first, second) = if agent.id < integration.id {
+            (agent.id, integration.id)
+        } else {
+            (integration.id, agent.id)
+        };
+        let Some(_first_lock) = self.try_worktree_lock(first)? else {
+            bail!("worktree has another operation in progress");
+        };
+        let Some(_second_lock) = self.try_worktree_lock(second)? else {
+            bail!("worktree has another operation in progress");
+        };
+        let agent = self.get_worktree(agent_worktree_id)?;
+        let integration = self.get_worktree(integration.id)?;
+        if agent.state != WorktreeState::Active || integration.state != WorktreeState::Active {
+            bail!("agent and integration worktrees must both be active");
+        }
+        if self.inspect_worktree_locked(agent.id)? != WorktreeStatus::Clean {
+            bail!("agent worktree is not clean enough to advance");
+        }
+        if self.inspect_worktree_locked(integration.id)? != WorktreeStatus::Clean {
+            bail!("integration worktree is not clean enough to advance an agent");
+        }
+        let repository = RepositoryRegistry::new(self.ledger.clone()).get(agent.repo_id)?;
+        let integration_head = run_git(
+            &integration.path,
+            [OsString::from("rev-parse"), OsString::from("HEAD")],
+        )?;
+        let integration_head = resolve_full_commit(&repository.canonical_root, &integration_head)?;
+        if integration_head != agent.base_sha {
+            let ancestor = run_git(
+                &repository.canonical_root,
+                [
+                    OsString::from("merge-base"),
+                    OsString::from("--is-ancestor"),
+                    OsString::from(&integration.base_sha),
+                    OsString::from(&integration_head),
+                ],
+            );
+            if ancestor.is_err() {
+                bail!("current integration commit no longer descends from the run base SHA");
+            }
+        }
+        let agent_head = run_git(
+            &agent.path,
+            [OsString::from("rev-parse"), OsString::from("HEAD")],
+        )?;
+        if agent_head == agent.base_sha {
+            if integration_head != agent_head {
+                run_git(
+                    &agent.path,
+                    [
+                        OsString::from("reset"),
+                        OsString::from("--hard"),
+                        OsString::from(&integration_head),
+                    ],
+                )?;
+            }
+        } else if agent_head != integration_head {
+            bail!("agent branch already contains worker commits; automatic base advancement is unsafe");
+        }
+        self.ledger.with_connection(|connection| {
+            connection.execute(
+                "UPDATE worktrees SET base_sha = ?2 WHERE id = ?1 AND state = 'active'",
+                params![agent.id.to_string(), integration_head],
+            )?;
+            Ok(())
+        })?;
+        self.get_worktree(agent.id)
     }
 
     pub fn inspect_worktree(&self, worktree_id: WorktreeId) -> Result<WorktreeStatus> {

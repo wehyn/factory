@@ -170,6 +170,10 @@ pub enum SliceStatus {
     Preparing,
     WaitingForContract,
     Queued,
+    Running,
+    Retryable,
+    Completed,
+    Integrated,
     Paused,
     Blocked,
 }
@@ -186,9 +190,43 @@ pub struct SliceAssignment {
     pub contract_keys: Vec<String>,
     pub agent_id: AgentId,
     pub worktree_id: Option<WorktreeId>,
+    pub attempt_count: u32,
+    pub source_commit: Option<String>,
+    pub completion_evidence: Option<String>,
     pub status: SliceStatus,
     pub blocked_reason: Option<String>,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerExit {
+    Completed,
+    Interrupted,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SchedulerBlocker {
+    pub id: Uuid,
+    pub run_id: RunId,
+    pub slice_id: Option<SliceId>,
+    pub kind: String,
+    pub detail: String,
+    pub created_at_ms: i64,
+    pub resolved_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct IntegrationRecord {
+    pub slice_id: SliceId,
+    pub run_id: RunId,
+    pub source_commit: String,
+    pub source_base_commit: String,
+    pub integration_base_commit: String,
+    pub destination_commit: Option<String>,
+    pub state: String,
+    pub integrated_at_ms: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

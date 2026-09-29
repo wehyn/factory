@@ -196,6 +196,33 @@ impl CodexRunner {
     }
 
     pub fn start_turn(&mut self, input: &str) -> Result<()> {
+        self.start_turn_with_sandbox_policy(input, None)
+    }
+
+    /// Starts a turn with write access restricted to the given canonical worker worktree.
+    /// Network access remains disabled for this turn and later turns on the same thread.
+    pub fn start_turn_in_worktree(&mut self, input: &str, worktree: &Path) -> Result<()> {
+        let writable_root = worktree
+            .canonicalize()
+            .with_context(|| format!("resolving worker worktree {}", worktree.display()))?;
+        if !writable_root.join(".git").exists() {
+            bail!("worker writable root must be an initialized Git worktree");
+        }
+        self.start_turn_with_sandbox_policy(
+            input,
+            Some(json!({
+                "type": "workspaceWrite",
+                "writableRoots": [writable_root.to_string_lossy()],
+                "networkAccess": false,
+            })),
+        )
+    }
+
+    fn start_turn_with_sandbox_policy(
+        &mut self,
+        input: &str,
+        sandbox_policy: Option<Value>,
+    ) -> Result<()> {
         let input = input.trim();
         if input.is_empty() {
             bail!("turn prompt must not be empty");
@@ -212,13 +239,14 @@ impl CodexRunner {
             .clone()
             .ok_or_else(|| anyhow!("Codex App Server thread has not started"))?;
 
-        let response = self.request(
-            "turn/start",
-            json!({
-                "threadId": thread_id,
-                "input": [{"type": "text", "text": input}],
-            }),
-        );
+        let mut params = json!({
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": input}],
+        });
+        if let Some(policy) = sandbox_policy {
+            params["sandboxPolicy"] = policy;
+        }
+        let response = self.request("turn/start", params);
         let result = match response {
             Ok(result) => result,
             Err(error) => {
@@ -297,6 +325,25 @@ impl CodexRunner {
             return Err(anyhow!("Codex App Server exited with status {status}"));
         }
         Ok(())
+    }
+
+    /// Nonblocking process check for a resident scheduler. A completed App Server turn does not
+    /// imply that the server process has exited; this reports only the child process boundary.
+    pub fn try_wait_for_exit(&mut self) -> Result<Option<bool>> {
+        if self.exited {
+            return Ok(Some(true));
+        }
+        let Some(status) = self.child.try_wait()? else {
+            return Ok(None);
+        };
+        self.shared.terminate_process_group();
+        self.join_reader_threads()?;
+        self.exited = true;
+        self.raise_protocol_error()?;
+        if !status.success() {
+            bail!("Codex App Server exited with status {status}");
+        }
+        Ok(Some(true))
     }
 
     pub fn shutdown(&mut self) -> Result<()> {

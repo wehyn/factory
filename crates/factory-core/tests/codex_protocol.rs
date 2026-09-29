@@ -9,6 +9,7 @@ use tempfile::TempDir;
 struct FakeServer {
     _temp: TempDir,
     repo: PathBuf,
+    turn_capture: PathBuf,
     ledger: Arc<Ledger>,
     session: SessionId,
 }
@@ -30,6 +31,7 @@ impl FakeServer {
         ledger.append(&Event::new(session, EventKind::SessionCreated))?;
 
         Ok(Self {
+            turn_capture: temp.path().join("turn.json"),
             _temp: temp,
             repo,
             ledger,
@@ -44,6 +46,7 @@ impl FakeServer {
             .arg(FAKE_SERVER_SCRIPT)
             .arg("factory-fake-server")
             .arg(mode)
+            .env("FACTORY_TURN_CAPTURE", &self.turn_capture)
             .env(
                 "FACTORY_APP_SERVER_FIXTURE",
                 Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -62,6 +65,10 @@ impl FakeServer {
 
     fn session(&self) -> SessionId {
         self.session
+    }
+
+    fn turn_capture(&self) -> &Path {
+        &self.turn_capture
     }
 }
 
@@ -85,10 +92,14 @@ printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"01a0d9ed-60c2-74e1-93
 
 read_request
 id=$(request_id "$line")
+if [ "$mode" = "workspace-policy" ]; then printf '%s\n' "$line" > "$FACTORY_TURN_CAPTURE"; fi
 printf '{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"01a0d9ed-6184-7d73-853f-05ad64f41b5c"}}}\n' "$id"
 
 case "$mode" in
   success)
+    cat "$fixture"
+    ;;
+  workspace-policy)
     cat "$fixture"
     ;;
   failure)
@@ -154,6 +165,33 @@ fn persists_observed_turn_completion() -> anyhow::Result<()> {
         snapshot.sessions[0].process_state,
         SessionProcessState::Completed
     );
+    Ok(())
+}
+
+#[test]
+fn worker_turn_limits_writes_to_its_worktree_and_disables_network() -> anyhow::Result<()> {
+    let harness = FakeServer::new()?;
+    let ledger = harness.ledger();
+    let mut runner = CodexRunner::start_with_command(
+        harness.command("workspace-policy"),
+        harness.repo(),
+        Arc::clone(&ledger),
+        harness.session(),
+    )?;
+    runner.start_turn_in_worktree("Make the scoped change", harness.repo())?;
+    runner.wait_for_exit()?;
+
+    let request: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(harness.turn_capture())?)?;
+    let policy = request
+        .pointer("/params/sandboxPolicy")
+        .expect("worker sandbox policy");
+    assert_eq!(policy["type"], "workspaceWrite");
+    assert_eq!(
+        policy["writableRoots"][0],
+        harness.repo().canonicalize()?.to_string_lossy().as_ref()
+    );
+    assert_eq!(policy["networkAccess"], false);
     Ok(())
 }
 

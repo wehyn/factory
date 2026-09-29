@@ -6,7 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
@@ -21,6 +21,7 @@ const MAX_SNAPSHOT_OUTPUTS: usize = 40;
 pub struct Ledger {
     connection: Arc<Mutex<Connection>>,
     subscribers: Arc<Mutex<Vec<Sender<SequencedEvent>>>>,
+    database_path: Arc<PathBuf>,
 }
 
 impl Ledger {
@@ -153,13 +154,72 @@ impl Ledger {
                 principal_kind TEXT NOT NULL,
                 agent_id TEXT,
                 invoked_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS slice_attempts (
+                id TEXT PRIMARY KEY,
+                slice_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                session_id TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL,
+                started_at_ms INTEGER NOT NULL,
+                finished_at_ms INTEGER,
+                detail TEXT,
+                UNIQUE(slice_id, attempt_number)
+            );
+            CREATE INDEX IF NOT EXISTS slice_attempts_by_agent
+                ON slice_attempts(agent_id, attempt_number);
+            CREATE TABLE IF NOT EXISTS slice_integrations (
+                slice_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                source_commit TEXT NOT NULL,
+                source_base_commit TEXT NOT NULL,
+                integration_base_commit TEXT NOT NULL,
+                destination_commit TEXT,
+                state TEXT NOT NULL,
+                integrated_at_ms INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS scheduler_blockers (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                slice_id TEXT,
+                kind TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                resolved_at_ms INTEGER
             );",
+        )?;
+
+        ensure_column(
+            &connection,
+            "slice_assignments",
+            "attempt_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(&connection, "slice_assignments", "source_commit", "TEXT")?;
+        ensure_column(
+            &connection,
+            "slice_assignments",
+            "completion_evidence",
+            "TEXT",
+        )?;
+        ensure_column(
+            &connection,
+            "slice_integrations",
+            "source_base_commit",
+            "TEXT NOT NULL DEFAULT ''",
         )?;
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             subscribers: Arc::new(Mutex::new(Vec::new())),
+            database_path: Arc::new(path.to_path_buf()),
         })
+    }
+
+    pub fn database_path(&self) -> &Path {
+        self.database_path.as_path()
     }
 
     pub(crate) fn with_connection<T>(
@@ -344,4 +404,23 @@ impl Ledger {
 
         Ok(snapshot)
     }
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(());
+        }
+    }
+    connection.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+    ))?;
+    Ok(())
 }

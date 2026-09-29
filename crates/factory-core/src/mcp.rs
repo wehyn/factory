@@ -3,6 +3,7 @@ use crate::{
     mailbox::{Mailbox, McpPrincipal},
     model::{AgentId, AssignSliceRequest, MessageKind, MessageRecipient, RunId},
     repositories::RepositoryRegistry,
+    scheduler::Scheduler,
     worktrees::WorktreeManager,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -11,6 +12,7 @@ use std::{
     env,
     io::{BufRead, Write},
     path::PathBuf,
+    sync::Arc,
 };
 
 const MAX_MCP_LINE_BYTES: usize = 1024 * 1024;
@@ -113,6 +115,7 @@ pub struct FactoryMcpServer {
     mailbox: Mailbox,
     registry: RepositoryRegistry,
     principal: McpPrincipal,
+    scheduler: Option<Scheduler>,
 }
 
 #[derive(Clone, Copy)]
@@ -160,12 +163,64 @@ const MANAGER_TOOLS: &[ToolSpec] = &[
         read_only: false,
         idempotent: false,
     },
+    ToolSpec {
+        name: "factory_list_assignments",
+        description: "List bounded assignments and their scheduler state for one active run.",
+        schema: r#"{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"],"additionalProperties":false}"#,
+        read_only: true,
+        idempotent: true,
+    },
+    ToolSpec {
+        name: "factory_list_blockers",
+        description: "List unresolved worker, dependency, or integration blockers for a run.",
+        schema: r#"{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"],"additionalProperties":false}"#,
+        read_only: true,
+        idempotent: true,
+    },
+    ToolSpec {
+        name: "factory_complete_slice",
+        description:
+            "Record completion evidence for a worker and validate its commit and file scope.",
+        schema: r#"{"type":"object","properties":{"agent_id":{"type":"string"},"evidence":{"type":"string"}},"required":["agent_id","evidence"],"additionalProperties":false}"#,
+        read_only: false,
+        idempotent: true,
+    },
+    ToolSpec {
+        name: "factory_integrate_completed",
+        description:
+            "Integrate completed dependency-ready worker commits into the manager worktree.",
+        schema: r#"{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"],"additionalProperties":false}"#,
+        read_only: false,
+        idempotent: true,
+    },
+    ToolSpec {
+        name: "factory_resolve_blocker",
+        description: "Acknowledge a manager blocker after recovery or a deliberate decision.",
+        schema: r#"{"type":"object","properties":{"blocker_id":{"type":"string"}},"required":["blocker_id"],"additionalProperties":false}"#,
+        read_only: false,
+        idempotent: true,
+    },
+    ToolSpec {
+        name: "factory_retry_slice",
+        description: "Queue an eligible bounded worker retry after its previous process and worktree are accounted for.",
+        schema: r#"{"type":"object","properties":{"slice_id":{"type":"string"}},"required":["slice_id"],"additionalProperties":false}"#,
+        read_only: false,
+        idempotent: true,
+    },
 ];
 
 const AGENT_TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "factory_check_inbox",
         description: "Read unacknowledged messages directed to this worker.",
+        schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
+        read_only: true,
+        idempotent: true,
+    },
+    ToolSpec {
+        name: "factory_get_contracts",
+        description:
+            "Read authoritative contract decisions attached to this worker's assigned slice.",
         schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
         read_only: true,
         idempotent: true,
@@ -192,7 +247,13 @@ impl FactoryMcpServer {
             mailbox,
             registry,
             principal,
+            scheduler: None,
         }
+    }
+
+    pub fn with_scheduler(mut self, scheduler: Scheduler) -> Self {
+        self.scheduler = Some(scheduler);
+        self
     }
 
     pub fn list_tools(&self) -> Vec<Value> {
@@ -325,6 +386,41 @@ impl FactoryMcpServer {
                 let run_id = parse_id(required_str(arguments, "run_id")?)?;
                 Ok(serde_json::to_value(self.mailbox.list_messages(run_id)?)?)
             }
+            (McpPrincipal::Manager, "factory_list_assignments") => {
+                let run_id = parse_id(required_str(arguments, "run_id")?)?;
+                Ok(serde_json::to_value(
+                    self.mailbox.list_assignments(run_id)?,
+                )?)
+            }
+            (McpPrincipal::Manager, "factory_list_blockers") => {
+                let run_id = parse_id(required_str(arguments, "run_id")?)?;
+                Ok(serde_json::to_value(
+                    self.manager_scheduler()?.list_blockers(run_id)?,
+                )?)
+            }
+            (McpPrincipal::Manager, "factory_complete_slice") => {
+                let agent_id = parse_id(required_str(arguments, "agent_id")?)?;
+                Ok(serde_json::to_value(
+                    self.manager_scheduler()?
+                        .complete_slice(agent_id, required_str(arguments, "evidence")?)?,
+                )?)
+            }
+            (McpPrincipal::Manager, "factory_integrate_completed") => {
+                let run_id = parse_id(required_str(arguments, "run_id")?)?;
+                Ok(serde_json::to_value(
+                    self.manager_scheduler()?.integrate_completed(run_id)?,
+                )?)
+            }
+            (McpPrincipal::Manager, "factory_resolve_blocker") => {
+                let blocker_id = parse_id(required_str(arguments, "blocker_id")?)?;
+                self.manager_scheduler()?.resolve_blocker(blocker_id)?;
+                Ok(json!({"resolved": blocker_id}))
+            }
+            (McpPrincipal::Manager, "factory_retry_slice") => {
+                let slice_id = parse_id(required_str(arguments, "slice_id")?)?;
+                self.manager_scheduler()?.retry_slice(slice_id)?;
+                Ok(json!({"queued": slice_id}))
+            }
             (McpPrincipal::Manager, "factory_resolve_contract") => {
                 let run_id = parse_id(required_str(arguments, "run_id")?)?;
                 Ok(serde_json::to_value(self.mailbox.resolve_contract(
@@ -350,6 +446,9 @@ impl FactoryMcpServer {
             (McpPrincipal::Agent { run_id, agent_id }, "factory_check_inbox") => Ok(
                 serde_json::to_value(self.mailbox.deliver_pending(run_id, agent_id)?)?,
             ),
+            (McpPrincipal::Agent { run_id, agent_id }, "factory_get_contracts") => Ok(
+                serde_json::to_value(self.mailbox.contracts_for_agent(run_id, agent_id)?)?,
+            ),
             (McpPrincipal::Agent { run_id, agent_id }, "factory_acknowledge_message") => {
                 let message_id = parse_id(required_str(arguments, "message_id")?)?;
                 self.mailbox.acknowledge(run_id, agent_id, message_id)?;
@@ -371,6 +470,15 @@ impl FactoryMcpServer {
             }
             _ => bail!("tool '{name}' is not authorized for this principal"),
         }
+    }
+
+    fn manager_scheduler(&self) -> Result<&Scheduler> {
+        if self.principal != McpPrincipal::Manager {
+            bail!("only the manager can access scheduler controls");
+        }
+        self.scheduler
+            .as_ref()
+            .ok_or_else(|| anyhow!("scheduler control is unavailable in this MCP process"))
     }
 
     pub fn serve_stdio<R: BufRead, W: Write>(&self, reader: &mut R, writer: &mut W) -> Result<()> {
@@ -506,9 +614,14 @@ pub fn serve_stdio_from_env() -> Result<()> {
     };
     let ledger = Ledger::open(&ledger_path)?;
     let worktrees = WorktreeManager::new(ledger.clone(), worktree_root)?;
-    let mailbox = Mailbox::new(ledger.clone(), worktrees);
-    let registry = RepositoryRegistry::new(ledger);
+    let mailbox = Mailbox::new(ledger.clone(), worktrees.clone());
+    let registry = RepositoryRegistry::new(ledger.clone());
     let server = FactoryMcpServer::new(mailbox, registry, principal);
+    let server = if principal == McpPrincipal::Manager {
+        server.with_scheduler(Scheduler::control(Arc::new(ledger), worktrees))
+    } else {
+        server
+    };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut reader = std::io::BufReader::new(stdin.lock());

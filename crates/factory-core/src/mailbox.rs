@@ -416,6 +416,34 @@ impl Mailbox {
         })
     }
 
+    pub fn contracts_for_agent(
+        &self,
+        run_id: RunId,
+        agent_id: AgentId,
+    ) -> Result<Vec<ContractDecision>> {
+        self.ledger.with_connection(|connection| {
+            ensure_active_agent(connection, run_id, agent_id)?;
+            let slice_id = connection
+                .query_row(
+                    "SELECT id FROM slice_assignments WHERE run_id = ?1 AND agent_id = ?2",
+                    params![run_id.to_string(), agent_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("agent {agent_id} has no assigned slice in run {run_id}"))?;
+            let mut statement = connection.prepare(
+                "SELECT cd.run_id, cd.contract_key, cd.version, cd.body, cd.status, cd.updated_at_ms
+                 FROM slice_contracts sc JOIN contract_decisions cd
+                   ON cd.run_id = sc.run_id AND cd.contract_key = sc.contract_key
+                 WHERE sc.slice_id = ?1 AND sc.run_id = ?2 ORDER BY sc.contract_key",
+            )?;
+            let rows =
+                statement.query_map(params![slice_id, run_id.to_string()], contract_from_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("reading contracts for assigned worker")
+        })
+    }
+
     pub fn resolve_contract(
         &self,
         principal: McpPrincipal,
@@ -788,7 +816,8 @@ fn get_assignment_from_connection(
     let row = connection
         .query_row(
             "SELECT id, run_id, assignment_key, objective, acceptance_evidence, allowed_paths_json,
-                    agent_id, worktree_id, status, blocked_reason, created_at_ms
+                    agent_id, worktree_id, status, blocked_reason, created_at_ms,
+                    attempt_count, source_commit, completion_evidence
              FROM slice_assignments WHERE id = ?1 AND run_id = ?2",
             params![id.to_string(), run_id.to_string()],
             |row| {
@@ -804,6 +833,9 @@ fn get_assignment_from_connection(
                     row.get::<_, String>(8)?,
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             },
         )
@@ -829,6 +861,9 @@ fn get_assignment_from_connection(
         status: parse_slice_status(&row.8).ok_or_else(|| anyhow!("invalid slice status"))?,
         blocked_reason: row.9,
         created_at_ms: row.10,
+        attempt_count: row.11.max(0) as u32,
+        source_commit: row.12,
+        completion_evidence: row.13,
     })
 }
 
@@ -973,6 +1008,10 @@ fn slice_status_text(status: SliceStatus) -> &'static str {
         SliceStatus::Preparing => "preparing",
         SliceStatus::WaitingForContract => "waiting_for_contract",
         SliceStatus::Queued => "queued",
+        SliceStatus::Running => "running",
+        SliceStatus::Retryable => "retryable",
+        SliceStatus::Completed => "completed",
+        SliceStatus::Integrated => "integrated",
         SliceStatus::Paused => "paused",
         SliceStatus::Blocked => "blocked",
     }
@@ -983,6 +1022,10 @@ fn parse_slice_status(status: &str) -> Option<SliceStatus> {
         "preparing" => Some(SliceStatus::Preparing),
         "waiting_for_contract" => Some(SliceStatus::WaitingForContract),
         "queued" => Some(SliceStatus::Queued),
+        "running" => Some(SliceStatus::Running),
+        "retryable" => Some(SliceStatus::Retryable),
+        "completed" => Some(SliceStatus::Completed),
+        "integrated" => Some(SliceStatus::Integrated),
         "paused" => Some(SliceStatus::Paused),
         "blocked" => Some(SliceStatus::Blocked),
         _ => None,
