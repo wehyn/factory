@@ -56,7 +56,7 @@ The roadmap IDs below refer to `outputs/agentic-factory-implementation-plan.md`;
 - Acceptance: register canonical Git roots and record remote/default branch; create a run integration worktree and exclusive agent worktrees from exact base SHAs; detect overlapping file ownership; refuse unsafe or dirty archival without data loss; persist worktree metadata and recovery issues.
 - Verification evidence: `cargo test -p factory-core` passed (28 passed, one ignored); the worktree isolation suite passed five consecutive concurrent runs; `cargo check -p agentic-factory`, `cargo fmt --all -- --check`, and `git diff --check` passed. Coverage verifies Git's real worktree list, exact base SHA, isolated agent edits, credential scrubbing, reservation conflicts across SQLite connections, archive refusal/preservation, symlink and missing-path recovery, and startup reconciliation around a live creator.
 - Branch: `feat/repository-worktrees`
-- Commit: 938cbb0
+- Commit: a363a83
 
 ### Roadmap Task 5: Manager delegation, mailbox, and agent tools (R5)
 
