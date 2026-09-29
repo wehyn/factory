@@ -87,8 +87,10 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
   approval on the current head. Confirm the UI shows the eligible merge action.
 - [ ] Click **Merge with current checks** once. Confirm the merge command includes the recorded
   head SHA, then refresh and verify the merged commit SHA.
-- [ ] Repeat the same create/merge action key through a fixture or controlled retry. Confirm the
-  ledger returns the original receipt and GitHub receives no duplicate action.
+- [x] Fixture: `mismatched_pr_does_not_block_intended_creation_and_actions_remain_idempotent`
+  repeats the create and merge keys, confirms both calls return the original results, and asserts
+  the GitHub CLI receives exactly one create and one merge action. This is fixture evidence; it
+  does not claim a duplicate-action retry against the live GitHub service.
 - [x] Create a pull request from the integrated run. The app published only run B's integration
   branch and the PR body included verification, review, decision, limitation, and commit/worktree
   provenance. The app recorded PR #1 at head
