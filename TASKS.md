@@ -95,7 +95,7 @@ The roadmap IDs below refer to `outputs/agentic-factory-implementation-plan.md`;
 - Dependencies: R6 integrated commits and review evidence
 - Status: IMPLEMENTED; live GitHub acceptance pending
 - Acceptance: `gh` observation and idempotent PR actions; current-head required-check revalidation immediately before merge; risk policy blocks security, permission, migration, deployment, secret, privacy, and public-interface changes from auto-merge; PR bodies include durable evidence.
-- Verification evidence: fixture-backed PR creation, durable idempotency receipts, required-check parsing, current-head revalidation, risk policy, evidence-rich PR bodies, and integration-branch binding are covered by `cargo test --workspace`. A mismatched PR number is rejected without occupying the run's tracked-PR slot; a subsequent intended PR can still be created. `origin` now points to the empty public project repository `wehyn/factory`; live gate acceptance still needs separate disposable repositories and their branch/check/review setup.
+- Verification evidence: fixture-backed PR creation, durable idempotency receipts, required-check parsing, current-head revalidation, risk policy, evidence-rich PR bodies, and integration-branch binding are covered by `cargo test --workspace`. A mismatched PR number is rejected without occupying the run's tracked-PR slot; a subsequent intended PR can still be created. `origin` points to the public project repository `wehyn/factory`, with `main` at the R8–R10 implementation commit; live gate acceptance still needs separate disposable repositories and their branch/check/review setup.
 
 ### Roadmap Task 9: Production observation and alerts (R9)
 

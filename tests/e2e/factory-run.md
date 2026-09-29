@@ -6,12 +6,12 @@ step complete based on a fake CLI, unit test, or a code review.
 ## Evidence record
 
 - Date and operator: 2026-09-29 / Codex local run
-- App build / commit: `Agentic Factory Preview` debug bundle (`dev.wayne.agenticfactory.preview`), branch `feat/repository-worktrees` at `5fb4339` plus the current uncommitted R8–R10 changes
+- App build / commit: `Agentic Factory Preview` debug bundle (`dev.wayne.agenticfactory.preview`), source commit `99528a4` pushed to `wehyn/factory` `main`
 - macOS version: 27.0
 - Codex CLI version: 0.157.0
 - GitHub CLI version and authentication status (never record credentials): 2.101.0; authenticated to github.com (credentials omitted)
-- Disposable repository A and commit: not selected; `origin` is the empty public project repository `wehyn/factory`, not a disposable test target
-- Disposable repository B and commit: not selected; `origin` is the empty public project repository `wehyn/factory`, not a disposable test target
+- Disposable repository A and commit: not selected; `wehyn/factory` is the public project repository, not a disposable test target
+- Disposable repository B and commit: not selected; `wehyn/factory` is the public project repository, not a disposable test target
 - Production test environment ID: not configured
 - Screenshots or log paths: `/tmp/agentic-factory-preview-final.png`; bundle at `target/debug/bundle/macos/Agentic Factory Preview.app`
 
@@ -113,8 +113,8 @@ ignored App Server/MCP/parallel-worker integration cases were run individually a
 Skipped live steps and why:
 
 - Two disposable repositories, real PR check/merge cases, and duplicate-action retries: `origin`
-  is configured to the empty public project repository `wehyn/factory`, which is not a disposable
-  test target. No disposable repositories were selected, and no live PR or merge was performed.
+  is configured to the public project repository `wehyn/factory`, which is not a disposable test
+  target. No disposable repositories were selected, and no live PR or merge was performed.
 - Matching deployment identity, failing smoke check, and live alert recovery: no production test
   environment or identity/smoke endpoints are configured.
 - Active-run close/reopen/restart against the final packaged bundle with production monitoring:
