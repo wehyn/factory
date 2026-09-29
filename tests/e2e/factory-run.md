@@ -6,7 +6,7 @@ step complete based on a fake CLI, unit test, or a code review.
 ## Evidence record
 
 - Date and operator: 2026-09-29 / Codex local run
-- App build / commit: `Agentic Factory Preview` debug bundle (`dev.wayne.agenticfactory.preview`), built from a worktree based on `origin/main` commit `1aaac39` with the PR-payload and receipt-recovery changes below
+- App build / commit: `Agentic Factory Preview` debug bundle (`dev.wayne.agenticfactory.preview`), rebuilt from code commit `3921381` on top of `origin/main` commit `7e5fbcb`; includes URL-bound create recovery and server-owned provenance input
 - macOS version: 27.0
 - Codex CLI version: 0.157.0
 - GitHub CLI version and authentication status (never record credentials): 2.101.0; authenticated to github.com (credentials omitted)
@@ -85,6 +85,11 @@ Run these cases on disposable pull requests; record the PR number and head SHA f
 - [x] Recover the interrupted PR-creation receipt: after a successful live refresh of PR #1, the
   ledger action `create-pr:1be942e4-2d2b-4704-a764-1f0d879f154f` is `completed` with a stored
   result. A regression test confirms retrying that key does not create a second PR.
+- [x] Fixture-only recovery and provenance regressions: an observed PR completes a pending create
+  only when its URL matches the URL returned by that create; an older matching PR cannot complete
+  a create command that failed before returning a URL. A forged `worktree_commits` field in the UI
+  payload is ignored, while server-generated integration provenance remains in the PR body. These
+  tests do not replace the unchecked live retry and merge cases above.
 
 ## Production watch
 
@@ -136,10 +141,11 @@ git diff --check
 
 This implementation run verifies the merge path against a fake `gh` executable, production
 outcomes against a fake `curl` executable, durable SQLite recovery, workspace builds, and a
-packaged Tauri build. Fresh verification passed `cargo fmt --all -- --check`, `cargo test --workspace`
-(73 passed, 3 ignored), `npm test -- --run` (4 passed), and `git diff --check`; the isolated preview
-app rebuilt successfully and was reviewed at 2160×1440. The three normally
-ignored App Server/MCP/parallel-worker integration cases were run individually and passed.
+packaged Tauri build. Fresh verification for code commit `3921381` passed `cargo fmt --all -- --check`,
+`cargo test --workspace` (74 passed, 3 ignored), `npm test -- --run` (4 passed), `npm run build`,
+and `git diff --check`; the isolated preview app rebuilt successfully. The recorded 2160×1440
+visual review and the three individually run App Server/MCP/parallel-worker integration cases are
+from the earlier acceptance run.
 
 Skipped live steps and why:
 
