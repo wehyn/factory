@@ -29,8 +29,8 @@ pub use model::{
 };
 pub use policy::{
     classify_risk, load_repository_policy, merge_decision, render_pull_request_body, CheckEvidence,
-    CheckState, GateInput, MergeDecision, PullRequestEvidence, RepositoryPolicy, ReviewEvidence,
-    ReviewState, RiskDecision, RiskLevel,
+    CheckState, GateInput, MergeDecision, PullRequestEvidence, PullRequestEvidenceInput,
+    RepositoryPolicy, ReviewEvidence, ReviewState, RiskDecision, RiskLevel,
 };
 pub use production::{
     evaluate_production, load_production_policy, ProductionAlert, ProductionAlertUpdate,

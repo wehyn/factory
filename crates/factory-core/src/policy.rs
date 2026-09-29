@@ -156,6 +156,28 @@ pub enum MergeDecision {
     Block { reason: String },
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct PullRequestEvidenceInput {
+    pub change_summary: String,
+    pub verification: Vec<String>,
+    pub independent_review: Vec<String>,
+    pub decisions: Vec<String>,
+    pub limitations: Vec<String>,
+}
+
+impl From<PullRequestEvidenceInput> for PullRequestEvidence {
+    fn from(input: PullRequestEvidenceInput) -> Self {
+        Self {
+            change_summary: input.change_summary,
+            verification: input.verification,
+            independent_review: input.independent_review,
+            decisions: input.decisions,
+            limitations: input.limitations,
+            worktree_commits: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PullRequestEvidence {
     pub change_summary: String,

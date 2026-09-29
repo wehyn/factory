@@ -5,10 +5,10 @@ use factory_core::{
     try_merge_pull_request, AgentMessage, CodexRunner, CodexWorkerLauncher, Event, EventKind,
     ExpectedPullRequestHead, FactoryMcpConfig, GitHubCli, Ledger, Mailbox, ManagerChatMessage,
     ManagerChatRole, MergeAttempt, ProductionInput, ProductionObserver, ProductionRunState,
-    ProductionStatus, PullRequestEvidence, PullRequestRecord, PullRequestStatus, RedactedOutput,
-    RepoId, Repository, RepositoryRegistry, RunId, RunRecord, Scheduler, SchedulerBlocker,
-    SessionId, SessionSnapshot, SliceAssignment, SliceStatus, SmokeCheckState, Worktree,
-    WorktreeManager, WorktreeStatus,
+    ProductionStatus, PullRequestEvidence, PullRequestEvidenceInput, PullRequestRecord,
+    PullRequestStatus, RedactedOutput, RepoId, Repository, RepositoryRegistry, RunId, RunRecord,
+    Scheduler, SchedulerBlocker, SessionId, SessionSnapshot, SliceAssignment, SliceStatus,
+    SmokeCheckState, Worktree, WorktreeManager, WorktreeStatus,
 };
 use serde::Serialize;
 use std::{
@@ -241,8 +241,9 @@ fn observe_pull_request(
 fn create_run_pull_request(
     state: tauri::State<'_, AppState>,
     run_id: String,
-    mut evidence: PullRequestEvidence,
+    evidence: PullRequestEvidenceInput,
 ) -> Result<PullRequestRecord, String> {
+    let mut evidence = PullRequestEvidence::from(evidence);
     let run_id = parse_run_id(&run_id).map_err(safe_error)?;
     let run = state
         .ledger

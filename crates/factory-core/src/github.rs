@@ -69,6 +69,11 @@ pub struct GitHubActionRecord {
     pub created_at_ms: i64,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct PullRequestCreateIntent {
+    url: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MergeAttempt {
     pub decision: MergeDecision,
@@ -338,6 +343,10 @@ pub fn create_pull_request(
         &run.title,
         &body,
     )?;
+    ledger.record_started_github_action_result(
+        idempotency_key,
+        &serde_json::to_string(&PullRequestCreateIntent { url: url.clone() })?,
+    )?;
     let number = pull_request_number(&url)?;
     let state = client.observe_pr(&repo_slug, number)?;
     validate_expected_pull_request_head(&state, expected_head)?;
@@ -482,7 +491,14 @@ fn complete_observed_create_action(ledger: &Ledger, record: &PullRequestRecord) 
         bail!("GitHub idempotency key belongs to a different action");
     }
     if !action.completed {
-        ledger.complete_github_action(&idempotency_key, &serde_json::to_string(record)?)?;
+        let Some(result_json) = action.result_json else {
+            return Ok(());
+        };
+        let intent: PullRequestCreateIntent = serde_json::from_str(&result_json)
+            .context("decoding the pending pull request creation identity")?;
+        if intent.url == record.state.url {
+            ledger.complete_github_action(&idempotency_key, &serde_json::to_string(record)?)?;
+        }
     }
     Ok(())
 }

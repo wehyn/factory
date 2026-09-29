@@ -10,7 +10,7 @@ import {
   registerRepository as registerRepositoryAtPath,
   type AgentMessage,
   type FactoryHomeSnapshot,
-  type PullRequestEvidence,
+  type PullRequestEvidenceInput,
   type RunHomeView,
 } from "./bridge";
 
@@ -131,7 +131,7 @@ function FactoryHome({ snapshot, selectedRunId, selectedMessage, error, onSelect
     setFormError("");
     try {
       const lines = (value: string) => value.split("\n").map((line) => line.trim()).filter(Boolean);
-      const evidence: PullRequestEvidence = {
+      const evidence: PullRequestEvidenceInput = {
         change_summary: changeSummary.trim(),
         verification: lines(verificationEvidence),
         independent_review: lines(reviewEvidence),

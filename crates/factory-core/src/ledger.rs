@@ -523,6 +523,49 @@ impl Ledger {
         })
     }
 
+    /// Stores a side-effect identity while an action is still unresolved, so recovery can
+    /// distinguish the result of this attempt from an older matching resource.
+    pub fn record_started_github_action_result(
+        &self,
+        idempotency_key: &str,
+        result_json: &str,
+    ) -> Result<()> {
+        validate_github_action_key(idempotency_key)?;
+        serde_json::from_str::<serde_json::Value>(result_json)
+            .context("GitHub action progress is not valid JSON")?;
+        self.with_connection(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let existing = transaction
+                .query_row(
+                    "SELECT state, result_json FROM github_actions WHERE idempotency_key = ?1",
+                    [idempotency_key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("GitHub action key was not reserved"))?;
+            anyhow::ensure!(
+                existing.0 == "started",
+                "GitHub action is already completed"
+            );
+            if let Some(previous) = existing.1 {
+                anyhow::ensure!(
+                    previous == result_json,
+                    "started GitHub action result cannot be changed"
+                );
+                transaction.commit()?;
+                return Ok(());
+            }
+            transaction.execute(
+                "UPDATE github_actions SET result_json = ?2
+                 WHERE idempotency_key = ?1 AND state = 'started' AND result_json IS NULL",
+                params![idempotency_key, result_json],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
     pub fn github_action(&self, idempotency_key: &str) -> Result<Option<GitHubActionRecord>> {
         validate_github_action_key(idempotency_key)?;
         self.with_connection(|connection| {

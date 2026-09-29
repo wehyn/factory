@@ -171,7 +171,7 @@ export type PullRequestRecord = {
   gate: { kind: "auto_merge" } | { kind: "wait_for_review" | "block"; reason: string } | null;
 };
 
-export type PullRequestEvidence = {
+export type PullRequestEvidenceInput = {
   change_summary: string;
   verification: string[];
   independent_review: string[];
@@ -240,7 +240,7 @@ export async function observePullRequest(runId: string, number: number): Promise
   return invoke<PullRequestRecord>("observe_pull_request", { runId, number });
 }
 
-export async function createRunPullRequest(runId: string, evidence: PullRequestEvidence): Promise<PullRequestRecord> {
+export async function createRunPullRequest(runId: string, evidence: PullRequestEvidenceInput): Promise<PullRequestRecord> {
   return invoke<PullRequestRecord>("create_run_pull_request", { runId, evidence });
 }
 

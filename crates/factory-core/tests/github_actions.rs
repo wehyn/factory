@@ -1,25 +1,9 @@
 use factory_core::{
     create_pull_request, evaluate_pull_request_gate, try_merge_pull_request,
-    ExpectedPullRequestHead, GitHubCli, Ledger, PullRequestEvidence, RepoId, Repository,
-    RepositoryPolicy, RunId, RunRecord,
+    ExpectedPullRequestHead, GitHubCli, Ledger, PullRequestEvidence, PullRequestEvidenceInput,
+    RepoId, Repository, RepositoryPolicy, RunId, RunRecord,
 };
 use std::{os::unix::fs::PermissionsExt, path::Path};
-
-#[test]
-fn ui_pr_evidence_payload_defaults_server_owned_provenance() -> anyhow::Result<()> {
-    let evidence: PullRequestEvidence = serde_json::from_value(serde_json::json!({
-        "change_summary": "Add acceptance notes",
-        "verification": ["git diff --check passed"],
-        "independent_review": [],
-        "decisions": [],
-        "limitations": []
-    }))?;
-
-    assert_eq!(evidence.change_summary, "Add acceptance notes");
-    assert_eq!(evidence.verification, ["git diff --check passed"]);
-    assert!(evidence.worktree_commits.is_empty());
-    Ok(())
-}
 
 #[test]
 fn refreshing_resolves_a_started_create_pr_action_after_observation_failure() -> anyhow::Result<()>
@@ -30,7 +14,16 @@ fn refreshing_resolves_a_started_create_pr_action_after_observation_failure() ->
     let checks_count = temp.path().join("checks-count");
     let create_count = temp.path().join("create-count");
     let head = "a".repeat(40);
-    write_fake_gh_with_transient_check_failure(&executable, &checks_count, &create_count, &head)?;
+    write_fake_gh_for_create_recovery(
+        &executable,
+        &checks_count,
+        &create_count,
+        &head,
+        Some("https://github.com/example/repo/pull/99"),
+        99,
+        "OPEN",
+        true,
+    )?;
 
     let repo_id = RepoId::new();
     let repository = Repository {
@@ -89,11 +82,18 @@ fn refreshing_resolves_a_started_create_pr_action_after_observation_failure() ->
         &idempotency_key,
     );
     assert!(failed_creation.is_err());
-    assert!(
-        !ledger
-            .github_action(&idempotency_key)?
-            .expect("create action should have been reserved")
-            .completed
+    let pending_action = ledger
+        .github_action(&idempotency_key)?
+        .expect("create action should have been reserved");
+    assert!(!pending_action.completed);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            pending_action
+                .result_json
+                .as_deref()
+                .expect("created PR URL should be recorded")
+        )?["url"],
+        "https://github.com/example/repo/pull/99"
     );
 
     let refreshed = evaluate_pull_request_gate(
@@ -121,6 +121,153 @@ fn refreshing_resolves_a_started_create_pr_action_after_observation_failure() ->
         &idempotency_key,
     )?;
     assert_eq!(retried_creation, refreshed);
+    assert_eq!(std::fs::read_to_string(&create_count)?, "1");
+    Ok(())
+}
+
+#[test]
+fn failed_create_does_not_reconcile_an_older_matching_closed_pr() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("gh");
+    let checks_count = temp.path().join("checks-count");
+    let create_count = temp.path().join("create-count");
+    let head = "a".repeat(40);
+    write_fake_gh_for_create_recovery(
+        &executable,
+        &checks_count,
+        &create_count,
+        &head,
+        None,
+        99,
+        "CLOSED",
+        false,
+    )?;
+    let (ledger, repository, run) = registered_run_fixture(temp.path())?;
+
+    let client = GitHubCli::with_executable(executable);
+    let idempotency_key = format!("create-pr:{}", run.id);
+    let expected_head = ExpectedPullRequestHead {
+        head_branch: "factory/run-1".to_owned(),
+        base_branch: "main".to_owned(),
+        head_sha: head,
+    };
+    assert!(create_pull_request(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &expected_head,
+        &idempotency_key,
+    )
+    .is_err());
+
+    let old_pr = evaluate_pull_request_gate(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &RepositoryPolicy::default(),
+        &expected_head,
+        99,
+    )?;
+    assert_eq!(old_pr.state.status, factory_core::PullRequestStatus::Closed);
+    let action = ledger
+        .github_action(&idempotency_key)?
+        .expect("failed create action should remain recorded");
+    assert!(
+        !action.completed,
+        "an older closed PR is not the create receipt"
+    );
+    assert!(
+        action.result_json.is_none(),
+        "failed command returned no PR identity"
+    );
+    assert_eq!(std::fs::read_to_string(&create_count)?, "1");
+    assert!(create_pull_request(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &expected_head,
+        &idempotency_key,
+    )
+    .is_err());
+    assert_eq!(std::fs::read_to_string(create_count)?, "1");
+    Ok(())
+}
+
+#[test]
+fn refresh_does_not_complete_create_for_a_different_matching_pr_url() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let executable = temp.path().join("gh");
+    let checks_count = temp.path().join("checks-count");
+    let create_count = temp.path().join("create-count");
+    let head = "a".repeat(40);
+    write_fake_gh_for_create_recovery(
+        &executable,
+        &checks_count,
+        &create_count,
+        &head,
+        Some("https://github.com/example/repo/pull/100"),
+        99,
+        "OPEN",
+        true,
+    )?;
+    let (ledger, repository, run) = registered_run_fixture(temp.path())?;
+    let client = GitHubCli::with_executable(executable);
+    let idempotency_key = format!("create-pr:{}", run.id);
+    let expected_head = ExpectedPullRequestHead {
+        head_branch: "factory/run-1".to_owned(),
+        base_branch: "main".to_owned(),
+        head_sha: head,
+    };
+
+    assert!(create_pull_request(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &expected_head,
+        &idempotency_key,
+    )
+    .is_err());
+    let pending = ledger
+        .github_action(&idempotency_key)?
+        .expect("create action should remain recorded");
+    assert!(!pending.completed);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(pending.result_json.as_deref().unwrap())?["url"],
+        "https://github.com/example/repo/pull/100"
+    );
+
+    let older_pr = evaluate_pull_request_gate(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &RepositoryPolicy::default(),
+        &expected_head,
+        99,
+    )?;
+    assert_eq!(older_pr.state.status, factory_core::PullRequestStatus::Open);
+    let pending = ledger.github_action(&idempotency_key)?.unwrap();
+    assert!(
+        !pending.completed,
+        "another PR URL is not the create receipt"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(pending.result_json.as_deref().unwrap())?["url"],
+        "https://github.com/example/repo/pull/100"
+    );
+    assert!(create_pull_request(
+        &client,
+        &ledger,
+        &run,
+        &repository,
+        &expected_head,
+        &idempotency_key,
+    )
+    .is_err());
     assert_eq!(std::fs::read_to_string(create_count)?, "1");
     Ok(())
 }
@@ -181,17 +328,19 @@ fn mismatched_pr_does_not_block_intended_creation_and_actions_remain_idempotent(
     )?;
     drop(connection);
     ledger.register_run_record(&run)?;
-    ledger.store_pull_request_evidence(
-        run.id,
-        &PullRequestEvidence {
-            change_summary: "Update docs for the new flow".to_owned(),
-            verification: vec!["cargo test -p factory-core: passed".to_owned()],
-            independent_review: vec!["Reviewer approved the current commit".to_owned()],
-            decisions: vec!["Keep automatic merge disabled by default".to_owned()],
-            limitations: vec!["No live production observation".to_owned()],
-            worktree_commits: vec![format!("integration branch commit {head}")],
-        },
-    )?;
+    let evidence_input: PullRequestEvidenceInput = serde_json::from_value(serde_json::json!({
+        "change_summary": "Update docs for the new flow",
+        "verification": ["cargo test -p factory-core: passed"],
+        "independent_review": ["Reviewer approved the current commit"],
+        "decisions": ["Keep automatic merge disabled by default"],
+        "limitations": ["No live production observation"],
+        "worktree_commits": ["caller-supplied fabricated provenance"]
+    }))?;
+    let mut evidence = PullRequestEvidence::from(evidence_input);
+    evidence
+        .worktree_commits
+        .push(format!("integration branch commit {head}"));
+    ledger.store_pull_request_evidence(run.id, &evidence)?;
 
     let client = GitHubCli::with_executable(executable);
     let create_key = format!("create:{}", run.id);
@@ -241,7 +390,8 @@ fn mismatched_pr_does_not_block_intended_creation_and_actions_remain_idempotent(
     let body = std::fs::read_to_string(body_path)?;
     assert!(body.contains("cargo test -p factory-core: passed"));
     assert!(body.contains("Reviewer approved the current commit"));
-    assert!(body.contains(&head));
+    assert!(!body.contains("caller-supplied fabricated provenance"));
+    assert!(body.contains(&format!("integration branch commit {head}")));
 
     let merge_key = format!("merge:{}:99", run.id);
     let mut wrong_head = expected_head.clone();
@@ -390,11 +540,15 @@ esac
     Ok(())
 }
 
-fn write_fake_gh_with_transient_check_failure(
+fn write_fake_gh_for_create_recovery(
     path: &Path,
     checks_count: &Path,
     create_count: &Path,
     head: &str,
+    create_url: Option<&str>,
+    observed_number: u64,
+    pr_state: &str,
+    fail_first_check: bool,
 ) -> anyhow::Result<()> {
     let script = r##"#!/bin/sh
 set -eu
@@ -406,17 +560,18 @@ case "$4" in
     if [ -f "$CREATE_COUNT" ]; then count=$(cat "$CREATE_COUNT"); fi
     count=$((count + 1))
     printf '%s' "$count" > "$CREATE_COUNT"
-    printf '%s' 'https://github.com/example/repo/pull/99'
+    if [ 'CREATE_FAIL' = 'yes' ]; then exit 9; fi
+    printf '%s' 'CREATE_URL'
     ;;
   view)
-    printf '%s' '{"number":99,"url":"https://github.com/example/repo/pull/99","title":"Fixture","state":"OPEN","isDraft":false,"headRefName":"factory/run-1","baseRefName":"main","headRefOid":"HEAD_SHA","baseRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","author":{"login":"wehyn"},"latestReviews":[],"mergeCommit":null}'
-    ;;
+    printf '%s' '{"number":OBSERVED_NUMBER,"url":"https://github.com/example/repo/pull/OBSERVED_NUMBER","title":"Fixture","state":"PR_STATE","isDraft":false,"headRefName":"factory/run-1","baseRefName":"main","headRefOid":"HEAD_SHA","baseRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","author":{"login":"wehyn"},"latestReviews":[],"mergeCommit":null}'
+  ;;
   checks)
     count=0
     if [ -f "$CHECKS_COUNT" ]; then count=$(cat "$CHECKS_COUNT"); fi
     count=$((count + 1))
     printf '%s' "$count" > "$CHECKS_COUNT"
-    if [ "$count" = "1" ]; then exit 8; fi
+    if [ 'FAIL_FIRST_CHECK' = 'yes' ] && [ "$count" = "1" ]; then exit 8; fi
     printf '%s' '[{"name":"verify","state":"SUCCESS","bucket":"pass"}]'
     ;;
   diff)
@@ -427,10 +582,56 @@ esac
 "##
     .replace("CHECKS_COUNT_PATH", &checks_count.display().to_string())
     .replace("CREATE_COUNT_PATH", &create_count.display().to_string())
+    .replace("CREATE_FAIL", if create_url.is_some() { "no" } else { "yes" })
+    .replace(
+        "CREATE_URL",
+        create_url.unwrap_or("https://github.com/example/repo/pull/0"),
+    )
+    .replace("OBSERVED_NUMBER", &observed_number.to_string())
+    .replace("PR_STATE", pr_state)
+    .replace(
+        "FAIL_FIRST_CHECK",
+        if fail_first_check { "yes" } else { "no" },
+    )
     .replace("HEAD_SHA", head);
     std::fs::write(path, script)?;
     let mut permissions = std::fs::metadata(path)?.permissions();
     permissions.set_mode(0o700);
     std::fs::set_permissions(path, permissions)?;
     Ok(())
+}
+
+fn registered_run_fixture(root: &Path) -> anyhow::Result<(Ledger, Repository, RunRecord)> {
+    let database = root.join("ledger.sqlite");
+    let repo_id = RepoId::new();
+    let repository = Repository {
+        id: repo_id,
+        canonical_root: root.to_path_buf(),
+        remote_url: Some("https://github.com/example/repo.git".to_owned()),
+        default_branch: "main".to_owned(),
+        registered_at_ms: 1,
+    };
+    let run = RunRecord {
+        id: RunId::new(),
+        repo_id,
+        title: "Update documentation".to_owned(),
+        base_sha: "b".repeat(40),
+        created_at_ms: 2,
+    };
+    let ledger = Ledger::open(&database)?;
+    let connection = rusqlite::Connection::open(&database)?;
+    connection.execute(
+        "INSERT INTO repositories(id, canonical_root, remote_url, default_branch, registered_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            repository.id.to_string(),
+            repository.canonical_root.to_string_lossy(),
+            repository.remote_url,
+            repository.default_branch,
+            repository.registered_at_ms,
+        ],
+    )?;
+    drop(connection);
+    ledger.register_run_record(&run)?;
+    Ok((ledger, repository, run))
 }
